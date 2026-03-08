@@ -37,10 +37,6 @@ target_link_libraries(hyprTwoPanePersistent PRIVATE
     ${HYPRLAND_LIBRARIES}
 )
 
-# GIT_COMMIT_HASH is provided by hyprland/src/version.h which is included
-# via PluginAPI.hpp — no need to define it here.
-message(STATUS "GIT_COMMIT_HASH will be taken from Hyprland version.h at compile time")
-
 install(TARGETS hyprTwoPanePersistent
     LIBRARY DESTINATION lib/hyprland/plugins
 )
