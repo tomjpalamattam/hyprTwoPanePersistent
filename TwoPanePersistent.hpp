@@ -1,8 +1,5 @@
 #pragma once
 
-// Need access to protected m_ghostSpace field in ITarget
-#define protected public
-
 #include <hyprland/src/layout/algorithm/TiledAlgorithm.hpp>
 #include <hyprland/src/layout/algorithm/Algorithm.hpp>
 #include <hyprland/src/layout/target/Target.hpp>
@@ -11,8 +8,7 @@
 #include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/plugins/PluginAPI.hpp>
 #include <hyprland/src/desktop/Workspace.hpp>
-
-#undef protected
+#include <hyprland/src/desktop/view/Window.hpp>
 
 #include <deque>
 #include <vector>
@@ -55,6 +51,7 @@ class CTPPAlgorithm : public ITiledAlgorithm {
     SP<ITarget> getMaster(WORKSPACEID wsID);
     SP<ITarget> getPinnedSlave(WORKSPACEID wsID);
     bool        isMaster(SP<ITarget> t);
+    bool        isHidden(SP<ITarget> t);
     SP<CSpace>  getSpace();
 
     void recalculateForSpace(SP<CSpace> space, WORKSPACEID wsID);
