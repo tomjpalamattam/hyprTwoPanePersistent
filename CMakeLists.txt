@@ -37,23 +37,9 @@ target_link_libraries(hyprTwoPanePersistent PRIVATE
     ${HYPRLAND_LIBRARIES}
 )
 
-# Embed the full ABI string that __hyprland_api_get_hash() returns at runtime
-execute_process(
-    COMMAND bash -c "hyprctl version 2>/dev/null | grep -oP 'Version ABI string: \\K\\S+'"
-    OUTPUT_VARIABLE HYPRLAND_ABI_STRING
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-
-if(NOT HYPRLAND_ABI_STRING OR HYPRLAND_ABI_STRING STREQUAL "")
-    set(HYPRLAND_ABI_STRING "4b07770b9ef1cceb2e6f56d33538aaffb9186b9c_aq_0.10_hu_0.11_hg_0.5_hc_0.1_hlg_0.6")
-    message(WARNING "Could not detect ABI string from hyprctl, using hardcoded v0.54.1 value")
-endif()
-
-message(STATUS "Building against Hyprland ABI string: ${HYPRLAND_ABI_STRING}")
-
-target_compile_definitions(hyprTwoPanePersistent PRIVATE
-    HYPRLAND_ABI_STRING="${HYPRLAND_ABI_STRING}"
-)
+# GIT_COMMIT_HASH is provided by hyprland/src/version.h which is included
+# via PluginAPI.hpp — no need to define it here.
+message(STATUS "GIT_COMMIT_HASH will be taken from Hyprland version.h at compile time")
 
 install(TARGETS hyprTwoPanePersistent
     LIBRARY DESTINATION lib/hyprland/plugins
