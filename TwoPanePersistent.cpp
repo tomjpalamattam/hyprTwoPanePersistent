@@ -20,7 +20,7 @@ SP<CSpace> CTPPAlgorithm::getSpace() {
 SP<ITarget> CTPPAlgorithm::getMaster(WORKSPACEID wsID) {
     for (auto& wt : m_targets) {
         auto t = wt.lock();
-        if (t && wsIDOf(t) == wsID && !t->m_ghostSpace)
+        if (t && wsIDOf(t) == wsID && !isHidden(t))
             return t;
     }
     // fallback: any target for this ws
@@ -44,19 +44,24 @@ SP<ITarget> CTPPAlgorithm::getPinnedSlave(WORKSPACEID wsID) {
     return nullptr;
 }
 
+bool CTPPAlgorithm::isHidden(SP<ITarget> t) {
+    if (!t || !t->window()) return false;
+    return t->window()->isHidden();
+}
+
 bool CTPPAlgorithm::isMaster(SP<ITarget> t) {
     if (!t) return false;
     return getMaster(wsIDOf(t)) == t;
 }
 
 void CTPPAlgorithm::ghostTarget(SP<ITarget> t) {
-    if (t) t->setSpaceGhost(t->space());
+    if (t && t->window())
+        t->window()->setHidden(true);
 }
 
 void CTPPAlgorithm::unghostTarget(SP<ITarget> t) {
-    if (!t) return;
-    auto sp = t->space();
-    if (sp) t->assignToSpace(sp);
+    if (t && t->window())
+        t->window()->setHidden(false);
 }
 
 // ── Window lifecycle ──────────────────────────────────────────────────────────
@@ -75,7 +80,7 @@ void CTPPAlgorithm::newTarget(SP<ITarget> target) {
     int visible = 0;
     for (auto& wt : m_targets) {
         auto t = wt.lock();
-        if (t && wsIDOf(t) == wsID && !t->m_ghostSpace)
+        if (t && wsIDOf(t) == wsID && !isHidden(t))
             visible++;
     }
 
@@ -158,8 +163,8 @@ void CTPPAlgorithm::recalculateForSpace(SP<CSpace> space, WORKSPACEID wsID) {
     auto  slave  = getPinnedSlave(wsID);
 
     // Ensure master and slave are not ghosted
-    if (master && master->m_ghostSpace) unghostTarget(master);
-    if (slave  && slave->m_ghostSpace)  unghostTarget(slave);
+    if (master && isHidden(master)) unghostTarget(master);
+    if (slave  && isHidden(slave))  unghostTarget(slave);
 
     const CBox& area = space->workArea();
     if (!master) return;
@@ -310,7 +315,7 @@ void CTPPAlgorithm::onTargetFocused(SP<ITarget> target) {
     if (st.pinnedSlave.lock() == target) return;
 
     // Ignore ghost targets
-    if (target->m_ghostSpace) return;
+    if (targeisHidden(t)) return;
 
     st.pinnedSlave = target;
     recalculate();
