@@ -12,7 +12,7 @@ WORKSPACEID CTPPAlgorithm::wsIDOf(SP<ITarget> t) {
 }
 
 SP<CSpace> CTPPAlgorithm::getSpace() {
-    auto parent = IModeAlgorithm::m_parent.lock();
+    auto parent = m_parent.lock();
     return parent ? parent->space() : nullptr;
 }
 
@@ -26,7 +26,7 @@ std::vector<SP<ITarget>> CTPPAlgorithm::targetsForWs(WORKSPACEID wsID) {
     return result;
 }
 
-// Master = first target in insertion order for this workspace
+// Master = first target for this workspace in insertion order
 SP<ITarget> CTPPAlgorithm::getMaster(WORKSPACEID wsID) {
     for (auto& wt : m_targets) {
         auto t = wt.lock();
@@ -36,7 +36,7 @@ SP<ITarget> CTPPAlgorithm::getMaster(WORKSPACEID wsID) {
     return nullptr;
 }
 
-// Slave = remembered slaveWin if valid, else first non-master
+// Slave = remembered slaveWin if valid and not master, else first non-master
 SP<ITarget> CTPPAlgorithm::getEffectiveSlave(WORKSPACEID wsID) {
     auto& st     = stateForWs(wsID);
     auto  master = getMaster(wsID);
@@ -45,8 +45,7 @@ SP<ITarget> CTPPAlgorithm::getEffectiveSlave(WORKSPACEID wsID) {
     auto remembered = st.slaveWin.lock();
     if (remembered && remembered != master) {
         for (auto& wt : m_targets)
-            if (wt.lock() == remembered)
-                return remembered;
+            if (wt.lock() == remembered) return remembered;
         st.slaveWin.reset();
     }
 
@@ -69,6 +68,7 @@ void CTPPAlgorithm::newTarget(SP<ITarget> target) {
     if (!target) return;
     for (auto& wt : m_targets)
         if (wt.lock() == target) return;
+
     m_targets.push_back(target);
     recalculate();
 }
@@ -124,9 +124,11 @@ void CTPPAlgorithm::recalculate() {
     const CBox& area = space->workArea();
     if (!master) return;
 
-    // Park all extra windows offscreen (outside right edge)
+    // Stack all non-visible windows at 1x1 offscreen (below and to the right)
+    // This keeps them in the layout system but out of sight
     double offX = area.x + area.w + 10;
-    double offY = area.y;
+    double offY = area.y + area.h + 10;
+
     for (auto& t : all) {
         if (t == master || t == slave) continue;
         t->setPositionGlobal({offX, offY, 1.0, 1.0});
@@ -167,7 +169,7 @@ void CTPPAlgorithm::resizeTarget(const Vector2D& delta, SP<ITarget> target, eRec
     recalculate();
 }
 
-// ── Cycle ─────────────────────────────────────────────────────────────────────
+// ── Cycle ────────────────────────────────────────────────────────────────────
 
 void CTPPAlgorithm::cycleNext(WORKSPACEID wsID) {
     auto& st     = stateForWs(wsID);
@@ -175,17 +177,22 @@ void CTPPAlgorithm::cycleNext(WORKSPACEID wsID) {
     auto  slave  = getEffectiveSlave(wsID);
     auto  all    = targetsForWs(wsID);
 
-    if (all.size() < 3) return;
+    if (all.size() < 3) return; // nothing to cycle
 
+    // Find index of current slave, pick next non-master after it
     int slaveIdx = -1;
     for (int i = 0; i < (int)all.size(); i++)
         if (all[i] == slave) { slaveIdx = i; break; }
 
+    // Search forward from slaveIdx for next non-master
     for (int i = 1; i <= (int)all.size(); i++) {
         int idx = (slaveIdx + i) % (int)all.size();
-        if (all[idx] != master) {
+        if (all[idx] != master && all[idx] != slave) {
             st.slaveWin = all[idx];
             recalculate();
+            // Focus the new slave
+            auto space = getSpace();
+            if (space) space->getNextCandidate(all[idx]);
             return;
         }
     }
@@ -204,10 +211,13 @@ void CTPPAlgorithm::cyclePrev(WORKSPACEID wsID) {
         if (all[i] == slave) { slaveIdx = i; break; }
 
     for (int i = 1; i <= (int)all.size(); i++) {
-        int idx = ((slaveIdx - i) % (int)all.size() + (int)all.size()) % (int)all.size();
-        if (all[idx] != master) {
+        int idx = ((slaveIdx - i) % (int)all.size() + all.size()) % (int)all.size();
+        if (all[idx] != master && all[idx] != slave) {
             st.slaveWin = all[idx];
             recalculate();
+            // Focus the new slave
+            auto space = getSpace();
+            if (space) space->getNextCandidate(all[idx]);
             return;
         }
     }
@@ -245,27 +255,29 @@ std::expected<void, std::string> CTPPAlgorithm::layoutMsg(const std::string_view
     return {};
 }
 
-// ── Focus tracking (the "persistent" part) ───────────────────────────────────
+// ── Focus tracking (persistence) ─────────────────────────────────────────────
 
 void CTPPAlgorithm::onTargetFocused(SP<ITarget> target) {
     if (!target) return;
     WORKSPACEID wsID = wsIDOf(target);
     if (wsID == WORKSPACE_INVALID) return;
 
-    // Master focused → slave stays unchanged (persistence!)
+    // Master focused → slave unchanged (the persistence)
     if (isMaster(target)) return;
 
     auto& st    = stateForWs(wsID);
     auto  slave = getEffectiveSlave(wsID);
 
-    // Only update slave record if this is the visible slave
-    if (target == slave)
+    // If focused window is the current slave → update record, done
+    if (target == slave) {
         st.slaveWin = target;
-    else {
-        // Offscreen window got focus → redirect to slave
-        auto space = getSpace();
-        if (space && slave) space->getNextCandidate(slave);
+        return;
     }
+
+    // Focused window is offscreen (not master, not slave) → redirect focus to slave
+    auto space = getSpace();
+    if (space && slave)
+        space->getNextCandidate(slave);
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -309,5 +321,6 @@ void CTPPAlgorithm::moveTargetInDirection(SP<ITarget> t, Math::eDirection, bool)
     WORKSPACEID wsID = wsIDOf(t);
     auto master = getMaster(wsID);
     auto slave  = getEffectiveSlave(wsID);
-    if (master && slave) swapTargets(master, slave);
+    if (master && slave)
+        swapTargets(master, slave);
 }
