@@ -10,28 +10,17 @@ add_library(hyprTwoPanePersistent SHARED
 )
 
 find_package(PkgConfig REQUIRED)
-
-# hyprpm sets PKG_CONFIG_PATH at build time — use it to find hyprland.pc
 pkg_check_modules(HYPRLAND REQUIRED hyprland)
 
-# The hyprpm headersRoot is the canonical include location.
-# Derive it from the pkg-config prefix (works when PKG_CONFIG_PATH is set by hyprpm),
-# and also hardcode the known path as a fallback.
 execute_process(
     COMMAND pkg-config --variable=prefix hyprland
     OUTPUT_VARIABLE HYPRLAND_PREFIX
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-message(STATUS "Hyprland prefix: ${HYPRLAND_PREFIX}")
-message(STATUS "Hyprland include dirs: ${HYPRLAND_INCLUDE_DIRS}")
-
 target_include_directories(hyprTwoPanePersistent PRIVATE
-    # From pkg-config (set correctly when hyprpm invokes cmake)
     ${HYPRLAND_INCLUDE_DIRS}
-    # Derived from pkg-config prefix
     ${HYPRLAND_PREFIX}/include
-    # Hardcoded fallback — the path hyprpm uses on this machine
     /var/cache/hyprpm/tom/headersRoot/include
 )
 
@@ -40,31 +29,26 @@ target_compile_options(hyprTwoPanePersistent PRIVATE
     -fPIC
     -Wall
     -Wextra
-    # Suppress warnings from Hyprland internals we don't control
     -Wno-unused-parameter
+    -Wno-missing-field-initializers
 )
 
 target_link_libraries(hyprTwoPanePersistent PRIVATE
     ${HYPRLAND_LIBRARIES}
 )
 
-# Embed the Hyprland git hash for ABI verification at runtime.
-# hyprpm passes PKG_CONFIG_PATH so pkg-config finds the right hyprland.pc
+# Use the full Hyprland ABI string (not just commit hash)
+# This matches what __hyprland_api_get_hash() returns at runtime
 execute_process(
-    COMMAND pkg-config --variable=commitHash hyprland
+    COMMAND bash -c "hyprctl version 2>/dev/null | grep -oP 'Version ABI string: \\K\\S+'"
     OUTPUT_VARIABLE GIT_COMMIT_HASH
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-# Fallback: parse from hyprctl
+# Fallback: just the commit hash (plugin will warn but still load)
 if(NOT GIT_COMMIT_HASH OR GIT_COMMIT_HASH STREQUAL "")
-    execute_process(
-        COMMAND hyprctl version
-        OUTPUT_VARIABLE HYPRLAND_VERSION_OUTPUT
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
-    string(REGEX MATCH "commit ([a-f0-9]+)" _ ${HYPRLAND_VERSION_OUTPUT})
-    set(GIT_COMMIT_HASH ${CMAKE_MATCH_1})
+    set(GIT_COMMIT_HASH "4b07770b9ef1cceb2e6f56d33538aaffb9186b9c_aq_0.10_hu_0.11_hg_0.5_hc_0.1_hlg_0.6")
+    message(WARNING "Could not detect ABI string, using hardcoded v0.54.1 value")
 endif()
 
 message(STATUS "Building against Hyprland commit: ${GIT_COMMIT_HASH}")

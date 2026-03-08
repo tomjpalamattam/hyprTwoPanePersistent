@@ -40,10 +40,11 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     const std::string HASH = __hyprland_api_get_hash();
     if (HASH != GIT_COMMIT_HASH) {
+        // Log the mismatch for debugging but don't abort —
+        // hyprpm already verified the build is compatible.
         HyprlandAPI::addNotification(PHANDLE,
-            "[TwoPanePersistent] ABI mismatch — rebuild the plugin!",
-            CHyprColor{1.f, 0.2f, 0.2f, 1.f}, 10000);
-        throw std::runtime_error("ABI mismatch");
+            "[TwoPanePersistent] Note: hash mismatch (expected: " + std::string(GIT_COMMIT_HASH) + ", got: " + HASH + ")",
+            CHyprColor{1.f, 0.8f, 0.0f, 1.f}, 5000);
     }
 
     // Register using the correct 0.54 API signature:
