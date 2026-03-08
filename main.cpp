@@ -38,7 +38,7 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     PHANDLE = handle;
 
-    const std::string HASH = __hyprland_api_get_hash();
+    const std::string HASH = __hyprland_api_get_client_hash();
     if (HASH != GIT_COMMIT_HASH) {
         HyprlandAPI::addNotification(PHANDLE,
             "[TwoPanePersistent] ABI mismatch — rebuild the plugin!",
