@@ -1,487 +1,394 @@
 #include "TwoPanePersistent.hpp"
 
-#define private public
-#include <hyprland/src/Compositor.hpp>
-#include <hyprland/src/desktop/Workspace.hpp>
-#include <hyprland/src/managers/KeybindManager.hpp>
-#undef private
+// ── State helpers ─────────────────────────────────────────────────────────────
 
-#include <hyprland/src/helpers/Monitor.hpp>
+STPPState& CTPPAlgorithm::stateFor(SP<ITarget> t) {
+    auto ws = t->workspace();
+    return stateForWs(ws ? ws->m_iID : WORKSPACE_INVALID);
+}
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+STPPState& CTPPAlgorithm::stateForWs(WORKSPACEID id) {
+    return m_wsStates[id]; // default-constructs if missing
+}
 
-STPPNodeData* CTwoPanePersistentLayout::getNodeFromWindow(PHLWINDOW pWindow) {
-    for (auto& node : m_lNodes) {
-        if (node.pWindow.lock() == pWindow)
-            return &node;
+SP<ITarget> CTPPAlgorithm::getMaster(WORKSPACEID wsID) {
+    // Master = first target added to this workspace (index 0 in insertion order)
+    for (auto& wt : m_targets) {
+        auto t = wt.lock();
+        if (!t) continue;
+        auto ws = t->workspace();
+        if (ws && ws->m_iID == wsID)
+            return t;
     }
     return nullptr;
 }
 
-STPPWorkspaceData& CTwoPanePersistentLayout::getOrCreateWorkspaceData(int wsID) {
-    auto it = m_mWorkspaceData.find(wsID);
-    if (it == m_mWorkspaceData.end()) {
-        m_mWorkspaceData[wsID] = STPPWorkspaceData{};
-        m_mWorkspaceData[wsID].workspaceID = wsID;
+SP<ITarget> CTPPAlgorithm::getPinnedSlave(WORKSPACEID wsID) {
+    auto& st = stateForWs(wsID);
+    auto  t  = st.pinnedSlave.lock();
+    if (!t) return nullptr;
+    // Validate it's still a live target in our list
+    for (auto& wt : m_targets) {
+        if (wt.lock() == t)
+            return t;
     }
-    return m_mWorkspaceData[wsID];
-}
-
-STPPNodeData* CTwoPanePersistentLayout::getMasterNode(int wsID) {
-    for (auto& node : m_lNodes) {
-        if (node.workspaceID == wsID && node.isMaster && node.valid)
-            return &node;
-    }
+    st.pinnedSlave.reset();
     return nullptr;
 }
 
-STPPNodeData* CTwoPanePersistentLayout::getSlaveNode(int wsID) {
-    PHLWINDOW pinned = getPinnedSlave(wsID);
-    if (!pinned)
-        return nullptr;
-    return getNodeFromWindow(pinned);
+bool CTPPAlgorithm::isMaster(SP<ITarget> t) {
+    auto ws = t->workspace();
+    if (!ws) return false;
+    return getMaster(ws->m_iID) == t;
 }
 
-PHLWINDOW CTwoPanePersistentLayout::getPinnedSlave(int wsID) {
-    auto& ws = getOrCreateWorkspaceData(wsID);
-    auto  pWindow = ws.pinnedSlave.lock();
+// ── Hide/unhide via space ghost ───────────────────────────────────────────────
+// We use setSpaceGhost to keep the target in the space but exclude it from layout,
+// effectively hiding it without moving it to a different workspace.
 
-    if (!pWindow || !pWindow->m_bIsMapped || pWindow->isHidden())
-        return nullptr;
-
-    // Verify it's still in our node list as a non-master on this workspace
-    auto* node = getNodeFromWindow(pWindow);
-    if (!node || node->workspaceID != wsID || node->isMaster)
-        return nullptr;
-
-    return pWindow;
+void CTPPAlgorithm::hideTarget(SP<ITarget> t) {
+    if (!t) return;
+    auto sp = m_parent.lock() ? m_parent.lock()->space() : nullptr;
+    if (sp) t->setSpaceGhost(sp);
 }
 
-void CTwoPanePersistentLayout::promoteFromQueue(int wsID) {
-    auto& ws = getOrCreateWorkspaceData(wsID);
-
-    while (!ws.hiddenQueue.empty()) {
-        auto next = ws.hiddenQueue.front().lock();
-        ws.hiddenQueue.pop_front();
-
-        if (next && next->m_bIsMapped) {
-            unhideWindow(next, wsID);
-            ws.pinnedSlave = next;
-            return;
-        }
-    }
-    // Queue exhausted — no slave
-    ws.pinnedSlave.reset();
+void CTPPAlgorithm::unhideTarget(SP<ITarget> t) {
+    if (!t) return;
+    auto sp = m_parent.lock() ? m_parent.lock()->space() : nullptr;
+    if (sp) t->assignToSpace(sp);
 }
 
-void CTwoPanePersistentLayout::hideWindow(PHLWINDOW pWindow) {
-    // Move to special:tpp_hidden workspace silently
-    g_pCompositor->moveWindowToWorkspaceSafe(pWindow,
-        g_pCompositor->getWorkspaceByName("special:tpp_hidden", true));
-}
+// ── ITiledAlgorithm: window lifecycle ─────────────────────────────────────────
 
-void CTwoPanePersistentLayout::unhideWindow(PHLWINDOW pWindow, int targetWsID) {
-    auto pWs = g_pCompositor->getWorkspaceByID(targetWsID);
-    if (pWs)
-        g_pCompositor->moveWindowToWorkspaceSafe(pWindow, pWs);
-}
+void CTPPAlgorithm::newTarget(SP<ITarget> target) {
+    auto ws = target->workspace();
+    if (!ws) return;
 
-// ── Focus hook ────────────────────────────────────────────────────────────────
-// Called whenever focus changes. This is the core of TwoPanePersistent:
-//   - If a SLAVE is focused → pin it (update slaveWin)
-//   - If MASTER is focused → do nothing (slave stays pinned)
+    WORKSPACEID wsID = ws->m_iID;
+    auto&       st   = stateForWs(wsID);
 
-void CTwoPanePersistentLayout::onWindowFocused(PHLWINDOW pWindow) {
-    if (!pWindow || !pWindow->m_bIsMapped)
-        return;
+    SP<ITarget> master = getMaster(wsID);
+    SP<ITarget> slave  = getPinnedSlave(wsID);
 
-    auto* node = getNodeFromWindow(pWindow);
-    if (!node || node->isMaster)
-        return; // master focused — persistence: don't touch pinnedSlave
-
-    int wsID = node->workspaceID;
-    auto& ws = getOrCreateWorkspaceData(wsID);
-
-    PHLWINDOW currentPinned = getPinnedSlave(wsID);
-
-    // If a different slave is now focused, update the pin
-    if (pWindow != currentPinned) {
-        // The previously pinned slave (if any) was already on screen —
-        // it stays on screen. The newly focused window becomes the pin.
-        ws.pinnedSlave = pWindow;
-        // recalculate so geometry is correct (master stays left, slave right)
-        recalculateMonitor(pWindow->m_pMonitor.lock()->ID);
-    }
-}
-
-// ── IHyprLayout: window lifecycle ─────────────────────────────────────────────
-
-void CTwoPanePersistentLayout::onWindowCreatedTiling(PHLWINDOW pWindow, eDirection) {
-    if (!pWindow->m_pWorkspace)
-        return;
-
-    int wsID = pWindow->m_pWorkspace->m_iID;
-    auto& ws = getOrCreateWorkspaceData(wsID);
-
-    STPPNodeData node;
-    node.pWindow     = pWindow;
-    node.workspaceID = wsID;
-    node.valid       = true;
-
-    bool hasMaster = getMasterNode(wsID) != nullptr;
-    bool hasSlave  = getPinnedSlave(wsID) != nullptr;
-
-    if (!hasMaster) {
-        // First window → becomes master
-        node.isMaster = true;
-        m_lNodes.push_back(node);
-    } else if (!hasSlave) {
-        // Second window → becomes the pinned slave
-        node.isMaster = false;
-        m_lNodes.push_back(node);
-        ws.pinnedSlave = pWindow;
+    if (!master) {
+        // First window → master
+        m_targets.push_back(target);
+    } else if (!slave) {
+        // Second window → pinned slave
+        m_targets.push_back(target);
+        st.pinnedSlave = target;
     } else {
-        // Third+ window → goes into the hidden queue
-        node.isMaster = false;
-        m_lNodes.push_back(node);
-        ws.hiddenQueue.push_back(pWindow);
-        hideWindow(pWindow);
-        return; // no recalculate needed, window is hidden
+        // Third+ → goes into hidden queue
+        m_targets.push_back(target);
+        st.hiddenQueue.push_back(target);
+        hideTarget(target);
+        return; // don't recalculate, window is hidden
     }
 
-    recalculateMonitor(pWindow->m_pMonitor.lock()->ID);
+    recalculate();
 }
 
-void CTwoPanePersistentLayout::onWindowRemovedTiling(PHLWINDOW pWindow) {
-    auto* node = getNodeFromWindow(pWindow);
-    if (!node)
-        return;
+void CTPPAlgorithm::movedTarget(SP<ITarget> target, std::optional<Vector2D>) {
+    // Target moved from another space/algorithm into ours — treat like new
+    newTarget(target);
+}
 
-    int  wsID      = node->workspaceID;
-    bool wasMaster = node->isMaster;
+void CTPPAlgorithm::removeTarget(SP<ITarget> target) {
+    auto ws = target->workspace();
+    WORKSPACEID wsID = ws ? ws->m_iID : WORKSPACE_INVALID;
+    auto& st = stateForWs(wsID);
 
-    node->valid = false;
-    m_lNodes.remove_if([](const STPPNodeData& n) { return !n.valid; });
+    bool wasMaster = isMaster(target);
+    bool wasSlave  = (getPinnedSlave(wsID) == target);
 
-    auto& ws = getOrCreateWorkspaceData(wsID);
+    // Remove from our target list
+    m_targets.erase(std::remove_if(m_targets.begin(), m_targets.end(),
+        [&](const WP<ITarget>& wt) { return wt.lock() == target; }), m_targets.end());
+
+    // Remove from hidden queue if present
+    st.hiddenQueue.erase(std::remove_if(st.hiddenQueue.begin(), st.hiddenQueue.end(),
+        [&](const WP<ITarget>& wt) { return wt.lock() == target; }), st.hiddenQueue.end());
 
     if (wasMaster) {
-        // Master closed: promote the current slave to master
-        auto* slaveNode = getSlaveNode(wsID);
-        if (slaveNode) {
-            slaveNode->isMaster = true;
-            ws.pinnedSlave.reset();
-            // Then promote from queue to fill slave slot
-            promoteFromQueue(wsID);
+        // Promote current slave to master (it becomes the new index-0 for this ws)
+        // The slave is already in m_targets; getMaster() returns first entry for ws,
+        // so we just need to make sure slave comes first — swap it to front.
+        auto slaveTarget = getPinnedSlave(wsID);
+        if (slaveTarget) {
+            // Move slave to front of m_targets for this workspace
+            auto it = std::find_if(m_targets.begin(), m_targets.end(),
+                [&](const WP<ITarget>& wt) { return wt.lock() == slaveTarget; });
+            if (it != m_targets.end()) {
+                std::rotate(m_targets.begin(), it, it + 1);
+            }
         }
-    } else {
-        // Slave closed: promote from queue
-        if (ws.pinnedSlave.lock() == pWindow || !getPinnedSlave(wsID)) {
-            ws.pinnedSlave.reset();
-            promoteFromQueue(wsID);
-        } else {
-            // One of the hidden queue windows closed — clean it from the queue
-            ws.hiddenQueue.erase(
-                std::remove_if(ws.hiddenQueue.begin(), ws.hiddenQueue.end(),
-                    [&](const PHLWINDOWREF& ref) { return ref.lock() == pWindow; }),
-                ws.hiddenQueue.end());
-        }
+        st.pinnedSlave.reset();
+        // Promote from queue to fill slave slot
+        promoteFromQueue(wsID);
+    } else if (wasSlave) {
+        st.pinnedSlave.reset();
+        promoteFromQueue(wsID);
     }
 
-    auto pWs = g_pCompositor->getWorkspaceByID(wsID);
-    if (pWs && pWs->m_pMonitor.lock())
-        recalculateMonitor(pWs->m_pMonitor.lock()->ID);
-}
-
-bool CTwoPanePersistentLayout::isWindowTiled(PHLWINDOW pWindow) {
-    return getNodeFromWindow(pWindow) != nullptr;
+    recalculate();
 }
 
 // ── Geometry ──────────────────────────────────────────────────────────────────
 
-void CTwoPanePersistentLayout::recalculateWorkspace(PHLWORKSPACE pWorkspace) {
-    if (!pWorkspace)
-        return;
+void CTPPAlgorithm::recalculate() {
+    auto parent = m_parent.lock();
+    if (!parent) return;
+    auto space = parent->space();
+    if (!space) return;
+    recalculateForSpace(space);
+}
 
-    int wsID = pWorkspace->m_iID;
-    auto& ws = getOrCreateWorkspaceData(wsID);
+void CTPPAlgorithm::recalculateForSpace(SP<CSpace> space) {
+    if (!space) return;
 
-    auto* masterNode = getMasterNode(wsID);
-    auto* slaveNode  = getSlaveNode(wsID);
+    auto ws = space->workspace();
+    if (!ws) return;
 
-    auto pMonitor = pWorkspace->m_pMonitor.lock();
-    if (!pMonitor)
-        return;
+    WORKSPACEID wsID = ws->m_iID;
+    auto& st = stateForWs(wsID);
 
-    // Usable area (respects gaps, reserved areas)
-    CBox workArea = pMonitor->vecPosition;
-    workArea.x += pMonitor->vecReservedTopLeft.x;
-    workArea.y += pMonitor->vecReservedTopLeft.y;
-    workArea.w  = pMonitor->vecSize.x - pMonitor->vecReservedTopLeft.x - pMonitor->vecReservedBottomRight.x;
-    workArea.h  = pMonitor->vecSize.y - pMonitor->vecReservedTopLeft.y - pMonitor->vecReservedBottomRight.y;
+    SP<ITarget> master = getMaster(wsID);
+    SP<ITarget> slave  = getPinnedSlave(wsID);
 
-    if (!masterNode) {
-        // No windows at all
-        return;
-    }
+    const CBox& area = space->workArea();
 
-    if (!slaveNode) {
-        // Only master — takes full area
-        masterNode->position = {workArea.x, workArea.y};
-        masterNode->size     = {workArea.w, workArea.h};
-        applyNodeDataToWindow(masterNode);
+    if (!master) return;
+
+    if (!slave) {
+        // Only master — full area
+        master->setPositionGlobal(area);
+        master->warpPositionSize();
         return;
     }
 
     // Two pane: master left, slave right
-    float masterW = workArea.w * ws.mfact;
-    float slaveW  = workArea.w - masterW;
+    float masterW = area.w * st.mfact;
+    float slaveW  = area.w - masterW;
 
-    masterNode->position = {workArea.x, workArea.y};
-    masterNode->size     = {masterW, workArea.h};
+    CBox masterBox = {area.x, area.y, masterW, area.h};
+    CBox slaveBox  = {area.x + masterW, area.y, slaveW, area.h};
 
-    slaveNode->position = {workArea.x + masterW, workArea.y};
-    slaveNode->size     = {slaveW, workArea.h};
+    master->setPositionGlobal(masterBox);
+    master->warpPositionSize();
 
-    applyNodeDataToWindow(masterNode);
-    applyNodeDataToWindow(slaveNode);
+    slave->setPositionGlobal(slaveBox);
+    slave->warpPositionSize();
 }
 
-void CTwoPanePersistentLayout::recalculateMonitor(const MONITORID& monID) {
-    auto pMonitor = g_pCompositor->getMonitorFromID(monID);
-    if (!pMonitor)
-        return;
+void CTPPAlgorithm::resizeTarget(const Vector2D& delta, SP<ITarget> target, eRectCorner corner) {
+    auto ws = target->workspace();
+    if (!ws) return;
 
-    for (auto& pWorkspace : g_pCompositor->m_vWorkspaces) {
-        if (pWorkspace->m_pMonitor.lock() == pMonitor)
-            recalculateWorkspace(pWorkspace);
+    auto& st   = stateForWs(ws->m_iID);
+    auto  space = m_parent.lock() ? m_parent.lock()->space() : nullptr;
+    if (!space) return;
+
+    float totalW = space->workArea().w;
+    if (totalW <= 0) return;
+
+    if (isMaster(target))
+        st.mfact += delta.x / totalW;
+    else
+        st.mfact -= delta.x / totalW;
+
+    st.mfact = std::clamp(st.mfact, 0.1f, 0.9f);
+    recalculate();
+}
+
+// ── Cycle and layout messages ─────────────────────────────────────────────────
+
+void CTPPAlgorithm::promoteFromQueue(WORKSPACEID wsID) {
+    auto& st = stateForWs(wsID);
+    while (!st.hiddenQueue.empty()) {
+        auto next = st.hiddenQueue.front().lock();
+        st.hiddenQueue.pop_front();
+        if (next) {
+            unhideTarget(next);
+            st.pinnedSlave = next;
+            return;
+        }
     }
 }
 
-void CTwoPanePersistentLayout::recalculateWindow(PHLWINDOW pWindow) {
-    auto* node = getNodeFromWindow(pWindow);
-    if (!node)
-        return;
-    auto pWs = g_pCompositor->getWorkspaceByID(node->workspaceID);
-    if (pWs)
-        recalculateWorkspace(pWs);
-}
+void CTPPAlgorithm::cycleNext(WORKSPACEID wsID) {
+    auto& st = stateForWs(wsID);
+    if (st.hiddenQueue.empty()) return;
 
-void CTwoPanePersistentLayout::applyNodeDataToWindow(STPPNodeData* node) {
-    auto pWindow = node->pWindow.lock();
-    if (!pWindow)
-        return;
+    SP<ITarget> currentSlave = getPinnedSlave(wsID);
 
-    pWindow->m_vPosition = node->position;
-    pWindow->m_vSize     = node->size;
-    pWindow->updateWindowDecos();
-
-    const auto PMONITOR = g_pCompositor->getMonitorFromID(pWindow->m_iMonitorID);
-    if (PMONITOR)
-        pWindow->m_bIsFloating = false;
-}
-
-// ── Resize ────────────────────────────────────────────────────────────────────
-
-void CTwoPanePersistentLayout::resizeActiveWindow(const Vector2D& delta, eRectCorner corner, PHLWINDOW pWindow) {
-    auto pFocused = pWindow ? pWindow : g_pCompositor->m_pLastWindow.lock();
-    if (!pFocused)
-        return;
-
-    auto* node = getNodeFromWindow(pFocused);
-    if (!node)
-        return;
-
-    auto& ws = getOrCreateWorkspaceData(node->workspaceID);
-
-    // Adjust mfact based on horizontal drag
-    auto pWs = g_pCompositor->getWorkspaceByID(node->workspaceID);
-    if (!pWs)
-        return;
-    auto pMon = pWs->m_pMonitor.lock();
-    if (!pMon)
-        return;
-
-    float totalW = pMon->vecSize.x - pMon->vecReservedTopLeft.x - pMon->vecReservedBottomRight.x;
-    if (totalW <= 0)
-        return;
-
-    if (node->isMaster)
-        ws.mfact += delta.x / totalW;
-    else
-        ws.mfact -= delta.x / totalW;
-
-    ws.mfact = std::clamp(ws.mfact, 0.1f, 0.9f);
-    recalculateWorkspace(pWs);
-}
-
-// ── Cycle dispatcher ──────────────────────────────────────────────────────────
-
-void CTwoPanePersistentLayout::cycleNext(PHLWORKSPACE pWorkspace) {
-    if (!pWorkspace)
-        return;
-
-    int wsID = pWorkspace->m_iID;
-    auto& ws = getOrCreateWorkspaceData(wsID);
-
-    if (ws.hiddenQueue.empty())
-        return;
-
-    PHLWINDOW currentSlave = getPinnedSlave(wsID);
-
-    // Pop next from front of queue
-    PHLWINDOW next;
-    while (!ws.hiddenQueue.empty()) {
-        next = ws.hiddenQueue.front().lock();
-        ws.hiddenQueue.pop_front();
-        if (next && next->m_bIsMapped)
-            break;
+    // Pop next from front
+    SP<ITarget> next;
+    while (!st.hiddenQueue.empty()) {
+        next = st.hiddenQueue.front().lock();
+        st.hiddenQueue.pop_front();
+        if (next) break;
         next = nullptr;
     }
-
-    if (!next)
-        return;
+    if (!next) return;
 
     // Send current slave to back of queue and hide it
     if (currentSlave) {
-        ws.hiddenQueue.push_back(currentSlave);
-        hideWindow(currentSlave);
-
-        // Remove its node from visible tracking (still in m_lNodes, just hidden)
+        hideTarget(currentSlave);
+        st.hiddenQueue.push_back(currentSlave);
     }
 
-    // Bring next window in and pin it
-    unhideWindow(next, wsID);
-    ws.pinnedSlave = next;
-
-    recalculateMonitor(pWorkspace->m_pMonitor.lock()->ID);
-    g_pCompositor->focusWindow(next);
+    unhideTarget(next);
+    st.pinnedSlave = next;
+    recalculate();
 }
 
-void CTwoPanePersistentLayout::cyclePrev(PHLWORKSPACE pWorkspace) {
-    if (!pWorkspace)
-        return;
+void CTPPAlgorithm::cyclePrev(WORKSPACEID wsID) {
+    auto& st = stateForWs(wsID);
+    if (st.hiddenQueue.empty()) return;
 
-    int wsID = pWorkspace->m_iID;
-    auto& ws = getOrCreateWorkspaceData(wsID);
+    SP<ITarget> currentSlave = getPinnedSlave(wsID);
 
-    if (ws.hiddenQueue.empty())
-        return;
-
-    PHLWINDOW currentSlave = getPinnedSlave(wsID);
-
-    // Take from back of queue
-    PHLWINDOW prev;
-    while (!ws.hiddenQueue.empty()) {
-        prev = ws.hiddenQueue.back().lock();
-        ws.hiddenQueue.pop_back();
-        if (prev && prev->m_bIsMapped)
-            break;
+    SP<ITarget> prev;
+    while (!st.hiddenQueue.empty()) {
+        prev = st.hiddenQueue.back().lock();
+        st.hiddenQueue.pop_back();
+        if (prev) break;
         prev = nullptr;
     }
-
-    if (!prev)
-        return;
+    if (!prev) return;
 
     if (currentSlave) {
-        ws.hiddenQueue.push_front(currentSlave);
-        hideWindow(currentSlave);
+        hideTarget(currentSlave);
+        st.hiddenQueue.push_front(currentSlave);
     }
 
-    unhideWindow(prev, wsID);
-    ws.pinnedSlave = prev;
-
-    recalculateMonitor(pWorkspace->m_pMonitor.lock()->ID);
-    g_pCompositor->focusWindow(prev);
+    unhideTarget(prev);
+    st.pinnedSlave = prev;
+    recalculate();
 }
 
-// ── layoutMessage (dispatcher target) ────────────────────────────────────────
+std::expected<void, std::string> CTPPAlgorithm::layoutMsg(const std::string_view& sv) {
+    auto parent = m_parent.lock();
+    if (!parent) return {};
+    auto space = parent->space();
+    if (!space) return {};
+    auto ws = space->workspace();
+    if (!ws) return {};
 
-std::any CTwoPanePersistentLayout::layoutMessage(SLayoutMessageHeader header, std::string message) {
-    if (message == "cyclenext") {
-        cycleNext(header.pWindow ? header.pWindow->m_pWorkspace : g_pCompositor->m_pLastWindow.lock()->m_pWorkspace);
-    } else if (message == "cycleprev") {
-        cyclePrev(header.pWindow ? header.pWindow->m_pWorkspace : g_pCompositor->m_pLastWindow.lock()->m_pWorkspace);
-    } else if (message == "focusmaster") {
-        auto* masterNode = header.pWindow ? getMasterNode(header.pWindow->m_pWorkspace->m_iID) : nullptr;
-        if (masterNode)
-            g_pCompositor->focusWindow(masterNode->pWindow.lock());
-    } else if (message == "focusslave") {
-        if (header.pWindow) {
-            PHLWINDOW slave = getPinnedSlave(header.pWindow->m_pWorkspace->m_iID);
-            if (slave)
-                g_pCompositor->focusWindow(slave);
-        }
+    WORKSPACEID wsID = ws->m_iID;
+
+    if (sv == "cyclenext")
+        cycleNext(wsID);
+    else if (sv == "cycleprev")
+        cyclePrev(wsID);
+    else if (sv == "focusmaster") {
+        auto master = getMaster(wsID);
+        if (master && master->window())
+            g_pCompositor->focusWindow(master->window());
+    } else if (sv == "focusslave") {
+        auto slave = getPinnedSlave(wsID);
+        if (slave && slave->window())
+            g_pCompositor->focusWindow(slave->window());
+    } else if (sv.starts_with("mfact ")) {
+        try {
+            float val = std::stof(std::string(sv.substr(6)));
+            stateForWs(wsID).mfact = std::clamp(val, 0.1f, 0.9f);
+            recalculate();
+        } catch (...) {}
+    } else {
+        return std::unexpected("Unknown message: " + std::string(sv));
     }
-    return "";
-}
 
-// ── Stubs for interface completeness ─────────────────────────────────────────
-
-SWindowRenderLayoutHints CTwoPanePersistentLayout::requestRenderHints(PHLWINDOW) {
     return {};
 }
 
-void CTwoPanePersistentLayout::switchWindows(PHLWINDOW pA, PHLWINDOW pB) {
-    auto* nodeA = getNodeFromWindow(pA);
-    auto* nodeB = getNodeFromWindow(pB);
-    if (!nodeA || !nodeB)
-        return;
+// ── Focus hook ────────────────────────────────────────────────────────────────
+// Core of TwoPanePersistent: slave focused → update pin; master focused → do nothing.
 
-    std::swap(nodeA->isMaster, nodeB->isMaster);
+void CTPPAlgorithm::onTargetFocused(SP<ITarget> target) {
+    if (!target) return;
+    auto ws = target->workspace();
+    if (!ws) return;
 
-    if (nodeA->workspaceID == nodeB->workspaceID) {
-        auto& ws = getOrCreateWorkspaceData(nodeA->workspaceID);
-        if (ws.pinnedSlave.lock() == pA)
-            ws.pinnedSlave = pB;
-        else if (ws.pinnedSlave.lock() == pB)
-            ws.pinnedSlave = pA;
+    WORKSPACEID wsID = ws->m_iID;
+
+    if (isMaster(target))
+        return; // master focused — persistence: slave stays pinned
+
+    // A non-master was focused — check it's actually one of our visible targets
+    bool found = false;
+    for (auto& wt : m_targets) {
+        if (wt.lock() == target) { found = true; break; }
+    }
+    if (!found) return;
+
+    auto& st = stateForWs(wsID);
+    if (st.pinnedSlave.lock() == target) return; // already pinned, no change
+
+    st.pinnedSlave = target;
+    recalculate();
+}
+
+// ── Remaining interface stubs ─────────────────────────────────────────────────
+
+SP<ITarget> CTPPAlgorithm::getNextCandidate(SP<ITarget> old) {
+    if (!old) return nullptr;
+    auto ws = old->workspace();
+    if (!ws) return nullptr;
+    WORKSPACEID wsID = ws->m_iID;
+
+    // If old is master, return slave; if old is slave, return master
+    if (isMaster(old))
+        return getPinnedSlave(wsID);
+    return getMaster(wsID);
+}
+
+std::optional<Vector2D> CTPPAlgorithm::predictSizeForNewTarget() {
+    auto parent = m_parent.lock();
+    if (!parent) return std::nullopt;
+    auto space = parent->space();
+    if (!space) return std::nullopt;
+    const auto& area = space->workArea();
+    // New window will be hidden in queue, but predict slave size
+    auto ws = space->workspace();
+    if (!ws) return std::nullopt;
+    auto& st = stateForWs(ws->m_iID);
+    return Vector2D{area.w * (1.0f - st.mfact), area.h};
+}
+
+void CTPPAlgorithm::swapTargets(SP<ITarget> a, SP<ITarget> b) {
+    if (!a || !b) return;
+    auto wsA = a->workspace();
+    auto wsB = b->workspace();
+    if (!wsA || !wsB || wsA->m_iID != wsB->m_iID) return;
+
+    WORKSPACEID wsID = wsA->m_iID;
+    auto& st = stateForWs(wsID);
+
+    // Swap in target list
+    for (auto& wt : m_targets) {
+        auto t = wt.lock();
+        if (t == a) { wt = b; }
+        else if (t == b) { wt = a; }
     }
 
-    recalculateWindow(pA);
+    // Update pinned slave if involved
+    auto pinned = st.pinnedSlave.lock();
+    if (pinned == a) st.pinnedSlave = b;
+    else if (pinned == b) st.pinnedSlave = a;
+
+    recalculate();
 }
 
-void CTwoPanePersistentLayout::moveWindowTo(PHLWINDOW pWindow, const std::string& dir, bool silent) {
-    // Not implemented for this layout — would need workspace transfers
-}
+void CTPPAlgorithm::moveTargetInDirection(SP<ITarget> t, Math::eDirection dir, bool silent) {
+    // For a two-pane layout, only meaningful direction is swapping master/slave
+    if (!t) return;
+    auto ws = t->workspace();
+    if (!ws) return;
 
-void CTwoPanePersistentLayout::alterSplitRatio(PHLWINDOW pWindow, float delta, bool exact) {
-    auto* node = getNodeFromWindow(pWindow);
-    if (!node)
-        return;
-    auto& ws = getOrCreateWorkspaceData(node->workspaceID);
-    if (exact)
-        ws.mfact = delta;
-    else
-        ws.mfact = std::clamp(ws.mfact + delta, 0.1f, 0.9f);
-    recalculateWindow(pWindow);
-}
+    SP<ITarget> master = getMaster(ws->m_iID);
+    SP<ITarget> slave  = getPinnedSlave(ws->m_iID);
 
-std::string CTwoPanePersistentLayout::getLayoutName() {
-    return "TwoPanePersistent";
-}
-
-void CTwoPanePersistentLayout::replaceWindowDataWith(PHLWINDOW from, PHLWINDOW to) {
-    auto* node = getNodeFromWindow(from);
-    if (!node)
-        return;
-    node->pWindow = to;
-
-    for (auto& [wsID, ws] : m_mWorkspaceData) {
-        if (ws.pinnedSlave.lock() == from)
-            ws.pinnedSlave = to;
-        for (auto& ref : ws.hiddenQueue) {
-            if (ref.lock() == from)
-                ref = to;
-        }
-    }
-}
-
-Vector2D CTwoPanePersistentLayout::predictSizeForNewWindowTiled() {
-    return {};
-}
-
-void CTwoPanePersistentLayout::fullscreenRequestForWindow(PHLWINDOW pWindow,
-    const eFullscreenMode CURRENT_EFFECTIVE_MODE, const eFullscreenMode EFFECTIVE_MODE) {
-    // Delegate to compositor default fullscreen handling
+    if (master && slave)
+        swapTargets(master, slave);
 }

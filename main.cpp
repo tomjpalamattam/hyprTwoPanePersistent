@@ -2,93 +2,82 @@
 
 #define private public
 #include <hyprland/src/Compositor.hpp>
-#include <hyprland/src/managers/LayoutManager.hpp>
-#include <hyprland/src/managers/KeybindManager.hpp>
 #undef private
 
 // ── Focus hook ────────────────────────────────────────────────────────────────
-// We hook focusWindow so we can intercept every focus change and update the
-// pinned slave without polling.
 
-inline CFunctionHook* g_pFocusWindowHook = nullptr;
+static CFunctionHook* g_pFocusHook = nullptr;
+typedef void (*tFocusWindow)(void*, PHLWINDOW, PHLWINDOW);
 
-typedef void (*origFocusWindow)(void*, PHLWINDOW, PHLWINDOW);
+void hkFocusWindow(void* self, PHLWINDOW pWindow, PHLWINDOW pSurface) {
+    (*(tFocusWindow)g_pFocusHook->m_pOriginal)(self, pWindow, pSurface);
 
-void hkFocusWindow(void* thisptr, PHLWINDOW pWindow, PHLWINDOW pSurface) {
-    // Call original first so Hyprland's internal state is updated
-    (*(origFocusWindow)g_pFocusWindowHook->m_pOriginal)(thisptr, pWindow, pSurface);
+    if (!g_pTPPAlgo || !pWindow) return;
 
-    // Now inform our layout
-    if (g_pTPPLayout && pWindow)
-        g_pTPPLayout->onWindowFocused(pWindow);
+    auto pWs = pWindow->m_pWorkspace;
+    if (!pWs) return;
+
+    auto space = pWs->m_pLayoutSpace;
+    if (!space) return;
+
+    for (auto& wt : space->targets()) {
+        auto t = wt.lock();
+        if (t && t->window() == pWindow) {
+            g_pTPPAlgo->onTargetFocused(t);
+            return;
+        }
+    }
 }
 
-// ── Dispatchers ───────────────────────────────────────────────────────────────
+// ── Plugin entry ──────────────────────────────────────────────────────────────
 
-static SDispatchResult dispatchCycleNext(std::string args) {
-    auto pWindow = g_pCompositor->m_pLastWindow.lock();
-    if (pWindow && g_pTPPLayout)
-        g_pTPPLayout->cycleNext(pWindow->m_pWorkspace);
-    return {};
+APICALL EXPORT std::string PLUGIN_API_VERSION() {
+    return HYPRLAND_API_VERSION;
 }
-
-static SDispatchResult dispatchCyclePrev(std::string args) {
-    auto pWindow = g_pCompositor->m_pLastWindow.lock();
-    if (pWindow && g_pTPPLayout)
-        g_pTPPLayout->cyclePrev(pWindow->m_pWorkspace);
-    return {};
-}
-
-// ── Plugin init / deinit ──────────────────────────────────────────────────────
 
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     PHANDLE = handle;
 
-    // Verify ABI compatibility
     const std::string HASH = __hyprland_api_get_hash();
     if (HASH != GIT_COMMIT_HASH) {
         HyprlandAPI::addNotification(PHANDLE,
-            "[TwoPanePersistent] ABI mismatch! Rebuild against your Hyprland version.",
-            CHyprColor{1.0, 0.2, 0.2, 1.0}, 10000);
+            "[TwoPanePersistent] ABI mismatch — rebuild the plugin!",
+            CHyprColor{1.f, 0.2f, 0.2f, 1.f}, 10000);
         throw std::runtime_error("ABI mismatch");
     }
 
-    // Create layout instance and register it
-    g_pTPPLayout = new CTwoPanePersistentLayout();
-    HyprlandAPI::addLayout(PHANDLE, "TwoPanePersistent", g_pTPPLayout);
+    // Register using the correct 0.54 API signature:
+    // addTiledAlgo(handle, name, typeid, factory)
+    HyprlandAPI::addTiledAlgo(PHANDLE, "TwoPanePersistent", &typeid(CTPPAlgorithm),
+        []() -> UP<Layout::ITiledAlgorithm> {
+            auto algo = makeUnique<CTPPAlgorithm>();
+            g_pTPPAlgo = algo.get();
+            return algo;
+        });
 
-    // Hook focusWindow to intercept focus changes
-    static const auto METHODS = HyprlandAPI::findFunctionsByName(PHANDLE, "focusWindow");
-    if (METHODS.empty()) {
-        HyprlandAPI::addNotification(PHANDLE,
-            "[TwoPanePersistent] Could not find focusWindow — focus tracking disabled.",
-            CHyprColor{1.0, 0.6, 0.0, 1.0}, 5000);
+    // Hook focusWindow for slave persistence tracking
+    auto methods = HyprlandAPI::findFunctionsByName(PHANDLE, "focusWindow");
+    if (!methods.empty()) {
+        g_pFocusHook = HyprlandAPI::createFunctionHook(
+            PHANDLE, methods[0].address, (void*)hkFocusWindow);
+        g_pFocusHook->hook();
     } else {
-        g_pFocusWindowHook = HyprlandAPI::createFunctionHook(
-            handle, METHODS[0].address, (void*)&hkFocusWindow);
-        g_pFocusWindowHook->hook();
+        HyprlandAPI::addNotification(PHANDLE,
+            "[TwoPanePersistent] focusWindow hook failed — persistence disabled",
+            CHyprColor{1.f, 0.6f, 0.f, 1.f}, 5000);
     }
 
-    // Register dispatchers for cycle keybinds:
-    //   bind = $mod, Tab,   exec, hyprctl dispatch tpp-cyclenext
-    //   bind = $mod SHIFT, Tab, exec, hyprctl dispatch tpp-cycleprev
-    HyprlandAPI::addDispatcher(PHANDLE, "tpp-cyclenext", dispatchCycleNext);
-    HyprlandAPI::addDispatcher(PHANDLE, "tpp-cycleprev", dispatchCyclePrev);
-
     HyprlandAPI::addNotification(PHANDLE,
-        "[TwoPanePersistent] Loaded! Set `general:layout = TwoPanePersistent` to use.",
-        CHyprColor{0.2, 0.9, 0.2, 1.0}, 5000);
+        "[TwoPanePersistent] Loaded! Use `general { layout = TwoPanePersistent }`",
+        CHyprColor{0.2f, 0.9f, 0.2f, 1.f}, 5000);
 
     return {"TwoPanePersistent",
-            "XMonad-style TwoPanePersistent layout for Hyprland",
-            "you", "1.0"};
+            "XMonad-style TwoPanePersistent layout",
+            "tomjpalamattam", "1.0"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    if (g_pFocusWindowHook)
-        g_pFocusWindowHook->unhook();
-
-    // Layout and dispatcher cleanup is handled by Hyprland on plugin unload
-    delete g_pTPPLayout;
-    g_pTPPLayout = nullptr;
+    if (g_pFocusHook)
+        g_pFocusHook->unhook();
+    g_pTPPAlgo = nullptr;
 }

@@ -1,93 +1,77 @@
 #pragma once
 
-#define private public
+#include <hyprland/src/layout/algorithm/TiledAlgorithm.hpp>
+#include <hyprland/src/layout/target/Target.hpp>
+#include <hyprland/src/layout/target/WindowTarget.hpp>
+#include <hyprland/src/layout/space/Space.hpp>
+#include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/plugins/PluginAPI.hpp>
-#include <hyprland/src/layout/IHyprLayout.hpp>
-#include <hyprland/src/desktop/Window.hpp>
-#include <hyprland/src/managers/LayoutManager.hpp>
-#undef private
 
-#include <list>
 #include <deque>
-#include <unordered_map>
+#include <vector>
+#include <optional>
 
-// Per-window node tracked by our layout
-struct STPPNodeData {
-    PHLWINDOWREF pWindow;
+using namespace Layout;
 
-    // Is this the master (left pane)?
-    bool isMaster = false;
+// ── Per-workspace state ───────────────────────────────────────────────────────
+struct STPPState {
+    // The pinned slave: the last focused non-master target.
+    // When focus returns to master, this stays unchanged (the "persistent" part).
+    WP<ITarget> pinnedSlave;
 
-    // Computed geometry (written by recalculate, read by applyNodeDataToWindow)
-    Vector2D position;
-    Vector2D size;
+    // Hidden targets in cycle order. Front = next to swap in.
+    std::deque<WP<ITarget>> hiddenQueue;
 
-    int  workspaceID = -1;
-    bool valid       = true;
-};
-
-// Per-workspace state
-struct STPPWorkspaceData {
-    int   workspaceID = -1;
-
-    // The pinned slave: whichever non-master window was most recently focused.
-    // nullopt = not set yet, pick the first slave.
-    PHLWINDOWREF pinnedSlave;
-
-    // Hidden windows (all non-master, non-slave tiled windows), in cycle order.
-    // Front = next to swap in on --cycle.
-    std::deque<PHLWINDOWREF> hiddenQueue;
-
-    // Split fraction: master takes mfact of width, slave gets the rest.
+    // Master/slave split fraction (master takes this fraction of width)
     float mfact = 0.55f;
 };
 
-class CTwoPanePersistentLayout : public IHyprLayout {
+// ── Layout algorithm ──────────────────────────────────────────────────────────
+class CTPPAlgorithm : public ITiledAlgorithm {
   public:
-    // ── IHyprLayout interface ─────────────────────────────────────────────
-    virtual void    onWindowCreatedTiling(PHLWINDOW, eDirection direction = DIRECTION_DEFAULT) override;
-    virtual void    onWindowRemovedTiling(PHLWINDOW) override;
-    virtual bool    isWindowTiled(PHLWINDOW) override;
-    virtual void    recalculateMonitor(const MONITORID&) override;
-    virtual void    recalculateWindow(PHLWINDOW) override;
-    virtual void    resizeActiveWindow(const Vector2D&, eRectCorner corner, PHLWINDOW pWindow = nullptr) override;
-    virtual void    fullscreenRequestForWindow(PHLWINDOW, const eFullscreenMode, const eFullscreenMode) override;
-    virtual std::any layoutMessage(SLayoutMessageHeader, std::string) override;
-    virtual SWindowRenderLayoutHints requestRenderHints(PHLWINDOW) override;
-    virtual void    switchWindows(PHLWINDOW, PHLWINDOW) override;
-    virtual void    moveWindowTo(PHLWINDOW, const std::string& dir, bool silent) override;
-    virtual void    alterSplitRatio(PHLWINDOW, float, bool) override;
-    virtual std::string getLayoutName() override;
-    virtual void    replaceWindowDataWith(PHLWINDOW from, PHLWINDOW to) override;
-    virtual Vector2D predictSizeForNewWindowTiled() override;
+    CTPPAlgorithm()          = default;
+    virtual ~CTPPAlgorithm() = default;
 
-    // Called by our focus hook when a window gains focus
-    void onWindowFocused(PHLWINDOW pWindow);
+    // ── ITiledAlgorithm interface ─────────────────────────────────────────
+    virtual void newTarget(SP<ITarget> target) override;
+    virtual void movedTarget(SP<ITarget> target, std::optional<Vector2D> focalPoint = std::nullopt) override;
+    virtual void removeTarget(SP<ITarget> target) override;
+    virtual void resizeTarget(const Vector2D& delta, SP<ITarget> target, eRectCorner corner = CORNER_NONE) override;
+    virtual void recalculate() override;
+    virtual SP<ITarget> getNextCandidate(SP<ITarget> old) override;
+    virtual std::expected<void, std::string> layoutMsg(const std::string_view& sv) override;
+    virtual std::optional<Vector2D> predictSizeForNewTarget() override;
+    virtual void swapTargets(SP<ITarget> a, SP<ITarget> b) override;
+    virtual void moveTargetInDirection(SP<ITarget> t, Math::eDirection dir, bool silent) override;
 
-    // Cycle: swap current slave with the next in the hidden queue
-    void cycleNext(PHLWORKSPACE pWorkspace);
-    void cyclePrev(PHLWORKSPACE pWorkspace);
+    // ── Called by focus hook ──────────────────────────────────────────────
+    void onTargetFocused(SP<ITarget> target);
 
   private:
-    std::list<STPPNodeData>                          m_lNodes;
-    std::unordered_map<int, STPPWorkspaceData>       m_mWorkspaceData;
+    // All visible tiled targets (master + current slave only)
+    std::vector<WP<ITarget>> m_targets;
 
-    STPPNodeData*        getNodeFromWindow(PHLWINDOW);
-    STPPWorkspaceData&   getOrCreateWorkspaceData(int wsID);
-    STPPNodeData*        getMasterNode(int wsID);
-    STPPNodeData*        getSlaveNode(int wsID);   // the pinned slave currently on-screen
-    PHLWINDOW            getPinnedSlave(int wsID); // returns null if pin is stale
+    // Per-workspace state (keyed by workspace ID)
+    std::unordered_map<WORKSPACEID, STPPState> m_wsStates;
 
-    void applyNodeDataToWindow(STPPNodeData* node);
-    void recalculateWorkspace(PHLWORKSPACE pWorkspace);
+    STPPState& stateFor(SP<ITarget> t);
+    STPPState& stateForWs(WORKSPACEID id);
 
-    // When slave closes or nothing pinned, promote from hidden queue
-    void promoteFromQueue(int wsID);
+    SP<ITarget> getMaster(WORKSPACEID wsID);
+    SP<ITarget> getPinnedSlave(WORKSPACEID wsID);
 
-    // Move a window to/from the hidden special workspace
-    void hideWindow(PHLWINDOW pWindow);
-    void unhideWindow(PHLWINDOW pWindow, int targetWsID);
+    bool isMaster(SP<ITarget> t);
+
+    void recalculateForSpace(SP<CSpace> space);
+    void cycleNext(WORKSPACEID wsID);
+    void cyclePrev(WORKSPACEID wsID);
+    void focusMaster(WORKSPACEID wsID);
+    void focusSlave(WORKSPACEID wsID);
+
+    void promoteFromQueue(WORKSPACEID wsID);
+    void hideTarget(SP<ITarget> t);
+    void unhideTarget(SP<ITarget> t);
 };
 
-inline CTwoPanePersistentLayout* g_pTPPLayout = nullptr;
-inline HANDLE PHANDLE = nullptr;
+inline CTPPAlgorithm* g_pTPPAlgo = nullptr;
+inline HANDLE         PHANDLE    = nullptr;
