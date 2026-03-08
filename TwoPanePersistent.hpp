@@ -10,7 +10,6 @@
 #include <hyprland/src/desktop/Workspace.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
 
-#include <deque>
 #include <vector>
 #include <optional>
 #include <unordered_map>
@@ -18,9 +17,8 @@
 using namespace Layout;
 
 struct STPPState {
-    WP<ITarget>             pinnedSlave;
-    std::deque<WP<ITarget>> hiddenQueue;
-    float                   mfact = 0.55f;
+    WP<ITarget> slaveWin;   // remembered slave window (the "persistent" part)
+    float       mfact = 0.55f;
 };
 
 class CTPPAlgorithm : public ITiledAlgorithm {
@@ -48,18 +46,15 @@ class CTPPAlgorithm : public ITiledAlgorithm {
     STPPState&  stateForWs(WORKSPACEID id);
     WORKSPACEID wsIDOf(SP<ITarget> t);
 
-    SP<ITarget> getMaster(WORKSPACEID wsID);
-    SP<ITarget> getPinnedSlave(WORKSPACEID wsID);
-    bool        isMaster(SP<ITarget> t);
-    bool        isHidden(SP<ITarget> t);
-    SP<CSpace>  getSpace();
+    SP<ITarget>              getMaster(WORKSPACEID wsID);
+    SP<ITarget>              getEffectiveSlave(WORKSPACEID wsID);
+    std::vector<SP<ITarget>> targetsForWs(WORKSPACEID wsID);
+    bool                     isMaster(SP<ITarget> t);
+    SP<CSpace>               getSpace();
 
-    void recalculateForSpace(SP<CSpace> space, WORKSPACEID wsID);
+    void updateVisibility(SP<CSpace> space, WORKSPACEID wsID);
     void cycleNext(WORKSPACEID wsID);
     void cyclePrev(WORKSPACEID wsID);
-    void promoteFromQueue(WORKSPACEID wsID);
-    void ghostTarget(SP<ITarget> t);
-    void unghostTarget(SP<ITarget> t);
 };
 
 inline CTPPAlgorithm* g_pTPPAlgo = nullptr;
