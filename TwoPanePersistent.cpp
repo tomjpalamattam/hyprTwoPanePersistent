@@ -16,7 +16,14 @@ SP<CSpace> CTPPAlgorithm::getSpace() {
     return parent ? parent->space() : nullptr;
 }
 
+// Master = first non-ghost target for this workspace
 SP<ITarget> CTPPAlgorithm::getMaster(WORKSPACEID wsID) {
+    for (auto& wt : m_targets) {
+        auto t = wt.lock();
+        if (t && wsIDOf(t) == wsID && !t->m_ghostSpace)
+            return t;
+    }
+    // fallback: any target for this ws
     for (auto& wt : m_targets) {
         auto t = wt.lock();
         if (t && wsIDOf(t) == wsID)
@@ -38,39 +45,51 @@ SP<ITarget> CTPPAlgorithm::getPinnedSlave(WORKSPACEID wsID) {
 }
 
 bool CTPPAlgorithm::isMaster(SP<ITarget> t) {
+    if (!t) return false;
     return getMaster(wsIDOf(t)) == t;
 }
 
-void CTPPAlgorithm::hideTarget(SP<ITarget> t, SP<CSpace> space) {
-    if (t && space)
-        t->setSpaceGhost(space);
+void CTPPAlgorithm::ghostTarget(SP<ITarget> t) {
+    if (t) t->setSpaceGhost(t->space());
 }
 
-void CTPPAlgorithm::unhideTarget(SP<ITarget> t, SP<CSpace> space) {
-    if (t && space)
-        t->assignToSpace(space);
+void CTPPAlgorithm::unghostTarget(SP<ITarget> t) {
+    if (!t) return;
+    auto sp = t->space();
+    if (sp) t->assignToSpace(sp);
 }
 
 // ── Window lifecycle ──────────────────────────────────────────────────────────
 
 void CTPPAlgorithm::newTarget(SP<ITarget> target) {
+    if (!target) return;
+
+    // Don't add duplicates
+    for (auto& wt : m_targets)
+        if (wt.lock() == target) return;
+
     WORKSPACEID wsID = wsIDOf(target);
     auto& st = stateForWs(wsID);
 
-    SP<ITarget> master = getMaster(wsID);
-    SP<ITarget> slave  = getPinnedSlave(wsID);
+    // Count visible (non-ghost) targets for this workspace
+    int visible = 0;
+    for (auto& wt : m_targets) {
+        auto t = wt.lock();
+        if (t && wsIDOf(t) == wsID && !t->m_ghostSpace)
+            visible++;
+    }
 
     m_targets.push_back(target);
 
-    if (!master) {
-        // First window → master, no action needed
-    } else if (!slave) {
+    if (visible == 0) {
+        // First window → master
+    } else if (visible == 1) {
         // Second window → pinned slave
         st.pinnedSlave = target;
     } else {
-        // Third+ → hidden queue
+        // Third+ → hide into queue
         st.hiddenQueue.push_back(target);
-        hideTarget(target, getSpace());
+        ghostTarget(target);
         return;
     }
 
@@ -78,10 +97,19 @@ void CTPPAlgorithm::newTarget(SP<ITarget> target) {
 }
 
 void CTPPAlgorithm::movedTarget(SP<ITarget> target, std::optional<Vector2D>) {
+    if (!target) return;
+    for (auto& wt : m_targets) {
+        if (wt.lock() == target) {
+            recalculate();
+            return;
+        }
+    }
     newTarget(target);
 }
 
 void CTPPAlgorithm::removeTarget(SP<ITarget> target) {
+    if (!target) return;
+
     WORKSPACEID wsID = wsIDOf(target);
     auto& st = stateForWs(wsID);
 
@@ -95,11 +123,10 @@ void CTPPAlgorithm::removeTarget(SP<ITarget> target) {
         [&](const WP<ITarget>& wt) { return wt.lock() == target; }), st.hiddenQueue.end());
 
     if (wasMaster) {
-        // Promote slave to master (move to front of m_targets for this ws)
-        auto slaveTarget = getPinnedSlave(wsID);
-        if (slaveTarget) {
+        auto slave = getPinnedSlave(wsID);
+        if (slave) {
             auto it = std::find_if(m_targets.begin(), m_targets.end(),
-                [&](const WP<ITarget>& wt) { return wt.lock() == slaveTarget; });
+                [&](const WP<ITarget>& wt) { return wt.lock() == slave; });
             if (it != m_targets.end())
                 std::rotate(m_targets.begin(), it, it + 1);
         }
@@ -130,8 +157,11 @@ void CTPPAlgorithm::recalculateForSpace(SP<CSpace> space, WORKSPACEID wsID) {
     auto  master = getMaster(wsID);
     auto  slave  = getPinnedSlave(wsID);
 
-    const CBox& area = space->workArea();
+    // Ensure master and slave are not ghosted
+    if (master && master->m_ghostSpace) unghostTarget(master);
+    if (slave  && slave->m_ghostSpace)  unghostTarget(slave);
 
+    const CBox& area = space->workArea();
     if (!master) return;
 
     if (!slave) {
@@ -154,8 +184,8 @@ void CTPPAlgorithm::resizeTarget(const Vector2D& delta, SP<ITarget> target, eRec
     auto space = getSpace();
     if (!space) return;
 
-    WORKSPACEID wsID  = wsIDOf(target);
-    auto&       st    = stateForWs(wsID);
+    WORKSPACEID wsID   = wsIDOf(target);
+    auto&       st     = stateForWs(wsID);
     double      totalW = space->workArea().w;
     if (totalW <= 0) return;
 
@@ -171,22 +201,21 @@ void CTPPAlgorithm::resizeTarget(const Vector2D& delta, SP<ITarget> target, eRec
 // ── Cycle ─────────────────────────────────────────────────────────────────────
 
 void CTPPAlgorithm::promoteFromQueue(WORKSPACEID wsID) {
-    auto& st    = stateForWs(wsID);
-    auto  space = getSpace();
+    auto& st = stateForWs(wsID);
     while (!st.hiddenQueue.empty()) {
         auto next = st.hiddenQueue.front().lock();
         st.hiddenQueue.pop_front();
         if (next) {
-            unhideTarget(next, space);
+            unghostTarget(next);
             st.pinnedSlave = next;
+            recalculate();
             return;
         }
     }
 }
 
 void CTPPAlgorithm::cycleNext(WORKSPACEID wsID) {
-    auto& st    = stateForWs(wsID);
-    auto  space = getSpace();
+    auto& st = stateForWs(wsID);
     if (st.hiddenQueue.empty()) return;
 
     auto currentSlave = getPinnedSlave(wsID);
@@ -201,18 +230,17 @@ void CTPPAlgorithm::cycleNext(WORKSPACEID wsID) {
     if (!next) return;
 
     if (currentSlave) {
-        hideTarget(currentSlave, space);
+        ghostTarget(currentSlave);
         st.hiddenQueue.push_back(currentSlave);
     }
 
-    unhideTarget(next, space);
+    unghostTarget(next);
     st.pinnedSlave = next;
     recalculate();
 }
 
 void CTPPAlgorithm::cyclePrev(WORKSPACEID wsID) {
-    auto& st    = stateForWs(wsID);
-    auto  space = getSpace();
+    auto& st = stateForWs(wsID);
     if (st.hiddenQueue.empty()) return;
 
     auto currentSlave = getPinnedSlave(wsID);
@@ -227,11 +255,11 @@ void CTPPAlgorithm::cyclePrev(WORKSPACEID wsID) {
     if (!prev) return;
 
     if (currentSlave) {
-        hideTarget(currentSlave, space);
+        ghostTarget(currentSlave);
         st.hiddenQueue.push_front(currentSlave);
     }
 
-    unhideTarget(prev, space);
+    unghostTarget(prev);
     st.pinnedSlave = prev;
     recalculate();
 }
@@ -251,12 +279,10 @@ std::expected<void, std::string> CTPPAlgorithm::layoutMsg(const std::string_view
         cyclePrev(wsID);
     else if (sv == "focusmaster") {
         auto master = getMaster(wsID);
-        if (master)
-            space->getNextCandidate(master); // move focus via space
+        if (master) space->getNextCandidate(master);
     } else if (sv == "focusslave") {
         auto slave = getPinnedSlave(wsID);
-        if (slave)
-            space->getNextCandidate(slave);
+        if (slave) space->getNextCandidate(slave);
     } else if (sv.starts_with("mfact ")) {
         try {
             float val = std::stof(std::string(sv.substr(6)));
@@ -270,31 +296,27 @@ std::expected<void, std::string> CTPPAlgorithm::layoutMsg(const std::string_view
     return {};
 }
 
-// ── Focus hook target ─────────────────────────────────────────────────────────
+// ── Focus tracking ────────────────────────────────────────────────────────────
 
 void CTPPAlgorithm::onTargetFocused(SP<ITarget> target) {
     if (!target) return;
     WORKSPACEID wsID = wsIDOf(target);
     if (wsID == WORKSPACE_INVALID) return;
 
-    if (isMaster(target))
-        return; // master focused — slave stays pinned (the persistence)
-
-    // Verify it's one of our visible (non-hidden) targets
-    bool found = false;
-    for (auto& wt : m_targets) {
-        if (wt.lock() == target) { found = true; break; }
-    }
-    if (!found) return;
+    // Master focused → slave stays pinned (the persistence)
+    if (isMaster(target)) return;
 
     auto& st = stateForWs(wsID);
     if (st.pinnedSlave.lock() == target) return;
+
+    // Ignore ghost targets
+    if (target->m_ghostSpace) return;
 
     st.pinnedSlave = target;
     recalculate();
 }
 
-// ── Remaining stubs ───────────────────────────────────────────────────────────
+// ── Navigation ────────────────────────────────────────────────────────────────
 
 SP<ITarget> CTPPAlgorithm::getNextCandidate(SP<ITarget> old) {
     if (!old) return nullptr;
@@ -309,18 +331,17 @@ std::optional<Vector2D> CTPPAlgorithm::predictSizeForNewTarget() {
     if (!space) return std::nullopt;
     auto ws = space->workspace();
     if (!ws) return std::nullopt;
-    const auto& area = space->workArea();
-    float mfact = stateForWs(ws->m_id).mfact;
+    const auto& area  = space->workArea();
+    float       mfact = stateForWs(ws->m_id).mfact;
     return Vector2D{area.w * (double)(1.0f - mfact), area.h};
 }
 
 void CTPPAlgorithm::swapTargets(SP<ITarget> a, SP<ITarget> b) {
     if (!a || !b) return;
-    WORKSPACEID wsA = wsIDOf(a);
-    WORKSPACEID wsB = wsIDOf(b);
-    if (wsA != wsB) return;
+    WORKSPACEID wsID = wsIDOf(a);
+    if (wsID != wsIDOf(b)) return;
 
-    auto& st = stateForWs(wsA);
+    auto& st = stateForWs(wsID);
 
     for (auto& wt : m_targets) {
         auto t = wt.lock();

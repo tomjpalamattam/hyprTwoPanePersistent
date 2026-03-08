@@ -56,8 +56,8 @@ class CTPPAlgorithm : public ITiledAlgorithm {
     void cycleNext(WORKSPACEID wsID);
     void cyclePrev(WORKSPACEID wsID);
     void promoteFromQueue(WORKSPACEID wsID);
-    void hideTarget(SP<ITarget> t, SP<CSpace> space);
-    void unhideTarget(SP<ITarget> t, SP<CSpace> space);
+    void ghostTarget(SP<ITarget> t);
+    void unghostTarget(SP<ITarget> t);
 };
 
 inline CTPPAlgorithm* g_pTPPAlgo = nullptr;
