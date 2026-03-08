@@ -235,10 +235,22 @@ void CTPPAlgorithm::cyclePrev(WORKSPACEID wsID) {
 // ── layoutMsg ────────────────────────────────────────────────────────────────
 
 std::expected<void, std::string> CTPPAlgorithm::layoutMsg(const std::string_view& sv) {
+    HyprlandAPI::addNotification(PHANDLE,
+        "[TPP] layoutMsg called: " + std::string(sv),
+        CHyprColor{0.2f, 0.6f, 1.f, 1.f}, 5000);
+
     auto space = getSpace();
-    if (!space) return {};
+    if (!space) {
+        HyprlandAPI::addNotification(PHANDLE, "[TPP] layoutMsg: space is null!",
+            CHyprColor{1.f, 0.2f, 0.2f, 1.f}, 5000);
+        return {};
+    }
     auto ws = space->workspace();
-    if (!ws) return {};
+    if (!ws) {
+        HyprlandAPI::addNotification(PHANDLE, "[TPP] layoutMsg: ws is null!",
+            CHyprColor{1.f, 0.2f, 0.2f, 1.f}, 5000);
+        return {};
+    }
     WORKSPACEID wsID = ws->m_id;
 
     if (sv == "cyclenext")
