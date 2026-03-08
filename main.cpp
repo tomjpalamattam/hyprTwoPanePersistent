@@ -38,10 +38,14 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     PHANDLE = handle;
 
-    const std::string HASH = __hyprland_api_get_client_hash();
-    if (HASH != GIT_COMMIT_HASH) {
+    // __hyprland_api_get_client_hash() builds the full ABI string at compile time from headers.
+    // __hyprland_api_get_hash() returns the full ABI string from the running Hyprland binary.
+    // They must match.
+    const std::string HASH = __hyprland_api_get_hash();
+    const std::string CLIENT_HASH = __hyprland_api_get_client_hash();
+    if (HASH != CLIENT_HASH) {
         HyprlandAPI::addNotification(PHANDLE,
-            "[TwoPanePersistent] ABI mismatch — rebuild the plugin!",
+            "[TwoPanePersistent] ABI mismatch — rebuild the plugin! got: " + HASH + " client: " + CLIENT_HASH,
             CHyprColor{1.f, 0.2f, 0.2f, 1.f}, 10000);
         throw std::runtime_error("ABI mismatch");
     }
