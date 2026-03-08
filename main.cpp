@@ -10,14 +10,14 @@ static CFunctionHook* g_pFocusHook = nullptr;
 typedef void (*tFocusWindow)(void*, PHLWINDOW, PHLWINDOW);
 
 void hkFocusWindow(void* self, PHLWINDOW pWindow, PHLWINDOW pSurface) {
-    (*(tFocusWindow)g_pFocusHook->m_pOriginal)(self, pWindow, pSurface);
+    (*(tFocusWindow)g_pFocusHook->m_original)(self, pWindow, pSurface);
 
     if (!g_pTPPAlgo || !pWindow) return;
 
-    auto pWs = pWindow->m_pWorkspace;
+    auto pWs = pWindow->m_workspace;
     if (!pWs) return;
 
-    auto space = pWs->m_pLayoutSpace;
+    auto space = pWs->m_space;
     if (!space) return;
 
     for (auto& wt : space->targets()) {
