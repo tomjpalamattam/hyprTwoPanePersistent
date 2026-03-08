@@ -268,16 +268,21 @@ void CTPPAlgorithm::onTargetFocused(SP<ITarget> target) {
     auto& st    = stateForWs(wsID);
     auto  slave = getEffectiveSlave(wsID);
 
-    // If focused window is the current slave → update record, done
+    // If focused window is already the current slave → just update record, done
     if (target == slave) {
         st.slaveWin = target;
         return;
     }
 
-    // Focused window is offscreen (not master, not slave) → redirect focus to slave
+    // Focused window is an offscreen/hidden window (not master, not slave)
+    // → promote it into the slave pane, old slave goes offscreen via recalculate()
+    st.slaveWin = target;
+    recalculate();
+
+    // Keep focus on the newly promoted slave
     auto space = getSpace();
-    if (space && slave)
-        space->getNextCandidate(slave);
+    if (space)
+        space->getNextCandidate(target);
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
