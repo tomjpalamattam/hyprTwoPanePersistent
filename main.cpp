@@ -47,8 +47,6 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("ABI mismatch");
     }
 
-    // Register using the correct 0.54 API signature:
-    // addTiledAlgo(handle, name, typeid, factory)
     HyprlandAPI::addTiledAlgo(PHANDLE, "TwoPanePersistent", &typeid(CTPPAlgorithm),
         []() -> UP<Layout::ITiledAlgorithm> {
             auto algo = makeUnique<CTPPAlgorithm>();
