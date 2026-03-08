@@ -176,26 +176,35 @@ void CTPPAlgorithm::cycleNext(WORKSPACEID wsID) {
     auto  master = getMaster(wsID);
     auto  slave  = getEffectiveSlave(wsID);
     auto  all    = targetsForWs(wsID);
+    auto  space  = getSpace();
 
-    if (all.size() < 3) return; // nothing to cycle
+    HyprlandAPI::addNotification(PHANDLE,
+        "[TPP] cycleNext called: all=" + std::to_string(all.size()) +
+        " master=" + std::to_string((bool)master) +
+        " slave=" + std::to_string((bool)slave) +
+        " space=" + std::to_string((bool)space),
+        CHyprColor{0.2f, 0.6f, 1.f, 1.f}, 5000);
 
-    // Find index of current slave, pick next non-master after it
+    if (all.size() < 3) return;
+
     int slaveIdx = -1;
     for (int i = 0; i < (int)all.size(); i++)
         if (all[i] == slave) { slaveIdx = i; break; }
 
-    // Search forward from slaveIdx for next non-master
     for (int i = 1; i <= (int)all.size(); i++) {
         int idx = (slaveIdx + i) % (int)all.size();
         if (all[idx] != master && all[idx] != slave) {
             st.slaveWin = all[idx];
             recalculate();
-            // Focus the new slave
-            auto space = getSpace();
             if (space) space->getNextCandidate(all[idx]);
+            HyprlandAPI::addNotification(PHANDLE, "[TPP] cycled to idx=" + std::to_string(idx),
+                CHyprColor{0.2f, 0.9f, 0.2f, 1.f}, 3000);
             return;
         }
     }
+
+    HyprlandAPI::addNotification(PHANDLE, "[TPP] no next found, slaveIdx=" + std::to_string(slaveIdx),
+        CHyprColor{1.f, 0.4f, 0.f, 1.f}, 5000);
 }
 
 void CTPPAlgorithm::cyclePrev(WORKSPACEID wsID) {
