@@ -1,10 +1,12 @@
+[repository]
 name = "hyprTwoPanePersistent"
-description = "XMonad-style TwoPanePersistent layout"
-author = "you"
-version = "1.0"
+authors = ["tomjpalamattam"]
 
-[[plugins]]
-name = "hyprTwoPanePersistent"
-description = "TwoPanePersistent layout"
-output = "libhyprTwoPanePersistent.so"
-build =  ["cmake -B build -DCMAKE_BUILD_TYPE=Release", "cmake --build build"]
+[hyprTwoPanePersistent]
+description = "XMonad-style TwoPanePersistent layout"
+authors = ["tomjpalamattam"]
+output = "build/libhyprTwoPanePersistent.so"
+build = [
+    "cmake -B build -DCMAKE_BUILD_TYPE=Release",
+    "cmake --build build"
+]
