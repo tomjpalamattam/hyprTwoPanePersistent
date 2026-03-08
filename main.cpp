@@ -38,7 +38,13 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     PHANDLE = handle;
 
-    // Note: hyprpm verifies ABI compatibility before loading, so no need to check here.
+    const std::string HASH = __hyprland_api_get_hash();
+    if (HASH != HYPRLAND_ABI_STRING) {
+        HyprlandAPI::addNotification(PHANDLE,
+            "[TwoPanePersistent] ABI mismatch — rebuild the plugin!",
+            CHyprColor{1.f, 0.2f, 0.2f, 1.f}, 10000);
+        throw std::runtime_error("ABI mismatch");
+    }
 
     // Register using the correct 0.54 API signature:
     // addTiledAlgo(handle, name, typeid, factory)
