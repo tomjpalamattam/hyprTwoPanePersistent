@@ -12,7 +12,7 @@ WORKSPACEID CTPPAlgorithm::wsIDOf(SP<ITarget> t) {
 }
 
 SP<CSpace> CTPPAlgorithm::getSpace() {
-    auto parent = m_parent.lock();
+    auto parent = IModeAlgorithm::m_parent.lock();
     return parent ? parent->space() : nullptr;
 }
 
