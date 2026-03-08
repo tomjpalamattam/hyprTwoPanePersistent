@@ -2,8 +2,13 @@
 
 #include <hyprland/src/layout/algorithm/TiledAlgorithm.hpp>
 #include <hyprland/src/layout/algorithm/Algorithm.hpp>
+
+// Need access to protected m_ghostSpace field
+#define protected public
 #include <hyprland/src/layout/target/Target.hpp>
 #include <hyprland/src/layout/target/WindowTarget.hpp>
+#undef protected
+
 #include <hyprland/src/layout/space/Space.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/plugins/PluginAPI.hpp>
