@@ -315,7 +315,7 @@ void CTPPAlgorithm::onTargetFocused(SP<ITarget> target) {
     if (st.pinnedSlave.lock() == target) return;
 
     // Ignore ghost targets
-    if (targeisHidden(t)) return;
+    if (isHidden(target)) return;
 
     st.pinnedSlave = target;
     recalculate();
