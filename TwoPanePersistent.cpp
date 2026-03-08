@@ -125,6 +125,7 @@ void CTPPAlgorithm::recalculate() {
     if (!master) return;
 
     // Stack all non-visible windows at 1x1 offscreen (below and to the right)
+    // This keeps them in the layout system but out of sight
     double offX = area.x + area.w + 10;
     double offY = area.y + area.h + 10;
 
@@ -176,17 +177,20 @@ void CTPPAlgorithm::cycleNext(WORKSPACEID wsID) {
     auto  slave  = getEffectiveSlave(wsID);
     auto  all    = targetsForWs(wsID);
 
-    if (all.size() < 3) return;
+    if (all.size() < 3) return; // nothing to cycle
 
+    // Find index of current slave, pick next non-master after it
     int slaveIdx = -1;
     for (int i = 0; i < (int)all.size(); i++)
         if (all[i] == slave) { slaveIdx = i; break; }
 
+    // Search forward from slaveIdx for next non-master
     for (int i = 1; i <= (int)all.size(); i++) {
         int idx = (slaveIdx + i) % (int)all.size();
         if (all[idx] != master && all[idx] != slave) {
             st.slaveWin = all[idx];
             recalculate();
+            // Focus the new slave
             auto space = getSpace();
             if (space) space->getNextCandidate(all[idx]);
             return;
@@ -211,6 +215,7 @@ void CTPPAlgorithm::cyclePrev(WORKSPACEID wsID) {
         if (all[idx] != master && all[idx] != slave) {
             st.slaveWin = all[idx];
             recalculate();
+            // Focus the new slave
             auto space = getSpace();
             if (space) space->getNextCandidate(all[idx]);
             return;
@@ -263,21 +268,16 @@ void CTPPAlgorithm::onTargetFocused(SP<ITarget> target) {
     auto& st    = stateForWs(wsID);
     auto  slave = getEffectiveSlave(wsID);
 
-    // Already the current slave → just update record, done
+    // If focused window is the current slave → update record, done
     if (target == slave) {
         st.slaveWin = target;
         return;
     }
 
-    // Hidden window got focus somehow (e.g. click on offscreen area) →
-    // promote to slave, old slave goes offscreen via recalculate()
-    st.slaveWin = target;
-    recalculate();
-
-    // Keep focus on the newly promoted slave
+    // Focused window is offscreen (not master, not slave) → redirect focus to slave
     auto space = getSpace();
-    if (space)
-        space->getNextCandidate(target);
+    if (space && slave)
+        space->getNextCandidate(slave);
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -285,34 +285,8 @@ void CTPPAlgorithm::onTargetFocused(SP<ITarget> target) {
 SP<ITarget> CTPPAlgorithm::getNextCandidate(SP<ITarget> old) {
     if (!old) return nullptr;
     WORKSPACEID wsID = wsIDOf(old);
-    auto& st    = stateForWs(wsID);
-    auto  master = getMaster(wsID);
-    auto  slave  = getEffectiveSlave(wsID);
-    auto  all    = targetsForWs(wsID);
-
-    if (isMaster(old)) {
-        // master → go to slave
-        return slave;
-    }
-
-    if (old == slave) {
-        // slave → find next hidden window, promote it to slave, focus it
-        // cycles through hidden windows in insertion order
-        for (auto& t : all) {
-            if (t != master && t != slave) {
-                st.slaveWin = t;
-                recalculate();
-                return t;
-            }
-        }
-        // no hidden windows → wrap back to master
-        return master;
-    }
-
-    // A hidden window is being targeted directly → promote it to slave
-    st.slaveWin = old;
-    recalculate();
-    return old;
+    if (isMaster(old)) return getEffectiveSlave(wsID);
+    return getMaster(wsID);
 }
 
 std::optional<Vector2D> CTPPAlgorithm::predictSizeForNewTarget() {
