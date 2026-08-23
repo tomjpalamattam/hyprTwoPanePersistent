@@ -348,10 +348,25 @@ void CTwoPanePersistent::swapTargets(SP<ITarget> a, SP<ITarget> b) {
     const int IA = indexOf(a);
     const int IB = indexOf(b);
 
-    if (IA < 0 || IB < 0)
+    // Grouping does NOT go through removeTarget/newTarget. CGroup::init() calls
+    // LayoutManager::switchTargets, which lands here with the *new* group target
+    // as one side and an existing window target as the other. So a one-sided
+    // match is a replacement, not a no-op -- bailing here would leave a stale
+    // target in m_nodes that we keep positioning and hiding forever.
+    if (IA < 0 && IB < 0)
         return;
 
-    std::swap(m_nodes[IA]->target, m_nodes[IB]->target);
+    if (IA >= 0 && IB >= 0)
+        std::swap(m_nodes[IA]->target, m_nodes[IB]->target);
+    else if (IA >= 0) {
+        // a is ours, b is replacing it
+        setWindowHidden(a, false);
+        m_nodes[IA]->target = b;
+    } else {
+        // b is ours, a is replacing it
+        setWindowHidden(b, false);
+        m_nodes[IB]->target = a;
+    }
 
     // If one of them was the remembered slave, the remembered slave should follow
     // the pane, not the window.
