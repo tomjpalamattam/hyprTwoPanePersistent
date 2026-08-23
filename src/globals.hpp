@@ -9,7 +9,6 @@ struct STPPGlobalState {
     struct {
         SP<Config::Values::CFloatValue> mfact;      // master pane fraction of the work area
         SP<Config::Values::CFloatValue> dfact;      // step used by `mfact +` / `mfact -`
-        SP<Config::Values::CFloatValue> hiddenAlpha; // alpha for stack windows that are not the slave
     } config;
 };
 

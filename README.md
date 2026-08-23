@@ -10,6 +10,10 @@ next in the stack, which is the entire reason the XMonad module exists.
 Requires Hyprland 0.55 or newer (it registers a tiled algorithm through
 `HyprlandAPI::addTiledAlgo`, which replaced `IHyprLayout`).
 
+Builds against both 0.56.x and current `-git`/`main`. `main` split `CWindow` into
+`view/window/` with a `presentation()` sub-object; the source detects this with
+`__has_include` and adapts, so one branch covers both.
+
 ## Install
 
 ```sh
@@ -30,7 +34,6 @@ config = {
         twopanepersistent = {
             mfact        = 0.5,   -- master pane fraction (mFrac)
             dfact        = 0.03,  -- step for mfact +/- (dFrac)
-            hidden_alpha = 0.0,   -- 0 hides stack windows; try 0.15 to keep them faintly visible
         },
     },
 }
@@ -59,23 +62,23 @@ horizontal delta onto the split.
 
 ## layoutmsg commands
 
-| command | effect |
-| --- | --- |
-| `cyclenext` / `cycleprev` | move focus down / up the stack |
-| `swapwithmaster` | promote the focused window to master; the old master becomes the slave |
-| `focusmaster` | focus the master pane |
-| `mfact [+\|-\|<n>]` | adjust the split |
+| command                   | effect                                                                 |
+| ------------------------- | ---------------------------------------------------------------------- |
+| `cyclenext` / `cycleprev` | move focus down / up the stack                                         |
+| `swapwithmaster`          | promote the focused window to master; the old master becomes the slave |
+| `focusmaster`             | focus the master pane                                                  |
+| `mfact [+\|-\|<n>]`       | adjust the split                                                       |
 
 ## Mapping from the Haskell
 
-| Haskell | here |
-| --- | --- |
-| `slaveWin :: Maybe a` | `m_slave` (a `WP<ITarget>`, so it self-invalidates when the window dies) |
-| `mFrac` | `m_split`, seeded from `plugin:twopanepersistent:mfact` |
-| `dFrac` | `plugin:twopanepersistent:dfact` |
-| `focusedMaster` slave fallback | `resolveSlave()` |
-| `focusedSlave` | `onFocusChanged()` — only fires for stack windows, so master focus is a no-op |
-| `Shrink` / `Expand` | `mfact -` / `mfact +`, plus `resizeTarget` |
+| Haskell                        | here                                                                          |
+| ------------------------------ | ----------------------------------------------------------------------------- |
+| `slaveWin :: Maybe a`          | `m_slave` (a `WP<ITarget>`, so it self-invalidates when the window dies)      |
+| `mFrac`                        | `m_split`, seeded from `plugin:twopanepersistent:mfact`                       |
+| `dFrac`                        | `plugin:twopanepersistent:dfact`                                              |
+| `focusedMaster` slave fallback | `resolveSlave()`                                                              |
+| `focusedSlave`                 | `onFocusChanged()` — only fires for stack windows, so master focus is a no-op |
+| `Shrink` / `Expand`            | `mfact -` / `mfact +`, plus `resizeTarget`                                    |
 
 ## Notes
 

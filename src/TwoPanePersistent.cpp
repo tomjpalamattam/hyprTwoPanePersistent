@@ -7,7 +7,19 @@
 #include <hyprland/src/layout/target/WindowGroupTarget.hpp>
 
 #include <hyprland/src/desktop/Workspace.hpp>
+
+// Hyprland main split CWindow apart: Window.hpp moved under view/window/ and the
+// presentation-ish methods moved behind a WindowPresentation sub-object. 0.56.x
+// has one flat view/Window.hpp with those methods directly on CWindow.
+#if __has_include(<hyprland/src/desktop/view/window/Window.hpp>)
+#define TPP_HYPRLAND_SPLIT_WINDOW 1
+#include <hyprland/src/desktop/view/window/Window.hpp>
+#include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
+#else
+#define TPP_HYPRLAND_SPLIT_WINDOW 0
 #include <hyprland/src/desktop/view/Window.hpp>
+#endif
+
 #include <hyprland/src/desktop/view/Group.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 
@@ -117,15 +129,20 @@ SP<ITarget> CTwoPanePersistent::resolveSlave() {
 // ---- visibility ------------------------------------------------------------
 //
 
-// Groups own WINDOW_ALPHA_LAYOUT: CGroup::updateWindowVisibility() rewrites it to
-// 1.0/0.0 on every tab switch. If we used that channel too, tabbing inside a group
-// that lives in the hidden stack would pop the window back into view over our panes.
-// Alpha channels multiply, so we take a channel nothing else writes and force 0
-// there instead -- the group can then drive LAYOUT freely without fighting us.
-static constexpr auto TPP_ALPHA = Desktop::View::WINDOW_ALPHA_MOVE_FROM_WORKSPACE;
+// Hiding uses CWindow::setHidden rather than an alpha channel.
+//
+// Alpha was a dead end: groups own WINDOW_ALPHA_LAYOUT and rewrite it on every
+// tab switch, and the channels that are free on 0.56.x are not free on main.
+// setHidden is the mechanism Hyprland actually sanctions for layouts -- see the
+// safeguard in CAlgorithm::updateTiledAlgo, which force-unhides "for layouts
+// (including third-party plugins) that use setHidden". It gates both rendering
+// and input, and leaves the group free to drive alpha however it likes.
+//
+// It is also closer to the Haskell: XMonad's TwoPane genuinely unmaps the
+// windows that are not in a pane rather than making them transparent.
 
 // A group presents to the layout as a single ITarget whose window() is only the
-// *current* tab, so hiding that alone would leave the other members untouched.
+// *current* tab, so hiding that alone would leave the other members visible.
 // Collect every window backing this target instead.
 std::vector<PHLWINDOW> CTwoPanePersistent::windowsFor(SP<ITarget> t) const {
     std::vector<PHLWINDOW> out;
@@ -156,13 +173,9 @@ std::vector<PHLWINDOW> CTwoPanePersistent::windowsFor(SP<ITarget> t) const {
 }
 
 void CTwoPanePersistent::setWindowHidden(SP<ITarget> t, bool hidden) const {
-    float hiddenAlpha = 0.F;
-    if (g_pTPPState && g_pTPPState->config.hiddenAlpha)
-        hiddenAlpha = std::clamp(static_cast<float>(g_pTPPState->config.hiddenAlpha->value()), 0.F, 1.F);
-
     for (const auto& WINDOW : windowsFor(t)) {
-        WINDOW->setInputBlocked(Desktop::View::INPUT_BLOCK_MONOCLE_INACTIVE, hidden);
-        *WINDOW->alpha(TPP_ALPHA) = hidden ? hiddenAlpha : 1.F;
+        if (WINDOW->isHidden() != hidden)
+            WINDOW->setHidden(hidden);
     }
 }
 
@@ -404,8 +417,13 @@ void CTwoPanePersistent::moveTargetInDirection(SP<ITarget> t, Math::eDirection d
         const auto PMONINDIR = State::monitorState()->query().relativeTo(PMONITOR).inDirection(dir).run();
 
         if (PMONINDIR && PMONINDIR != PMONITOR) {
-            if (t->window())
+            if (t->window()) {
+#if TPP_HYPRLAND_SPLIT_WINDOW
+                t->window()->presentation().setAnimationsToMove();
+#else
                 t->window()->setAnimationsToMove();
+#endif
+            }
 
             t->assignToSpace(PMONINDIR->m_activeWorkspace->m_space, focalPointForDir(t, dir));
         }

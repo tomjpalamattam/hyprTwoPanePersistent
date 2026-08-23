@@ -31,13 +31,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
                                                                        Config::Values::SFloatValueOptions{.min = 0.05F, .max = 0.95F});
     g_pTPPState->config.dfact = makeShared<Config::Values::CFloatValue>("plugin:twopanepersistent:dfact", "Step size used by `mfact +` and `mfact -`", 0.03F,
                                                                        Config::Values::SFloatValueOptions{.min = 0.001F, .max = 0.5F});
-    g_pTPPState->config.hiddenAlpha =
-        makeShared<Config::Values::CFloatValue>("plugin:twopanepersistent:hidden_alpha", "Alpha of stack windows that are not in the slave pane. 0 hides them completely", 0.0F,
-                                               Config::Values::SFloatValueOptions{.min = 0.F, .max = 1.F});
-
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pTPPState->config.mfact);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pTPPState->config.dfact);
-    HyprlandAPI::addConfigValueV2(PHANDLE, g_pTPPState->config.hiddenAlpha);
 
     const bool OK = HyprlandAPI::addTiledAlgo(PHANDLE, "twopanepersistent", &typeid(Layout::Tiled::CTwoPanePersistent),
                                               []() -> UP<Layout::ITiledAlgorithm> { return makeUnique<Layout::Tiled::CTwoPanePersistent>(); });
