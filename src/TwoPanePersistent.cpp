@@ -4,9 +4,11 @@
 #include <hyprland/src/layout/algorithm/Algorithm.hpp>
 #include <hyprland/src/layout/space/Space.hpp>
 #include <hyprland/src/layout/target/Target.hpp>
+#include <hyprland/src/layout/target/WindowGroupTarget.hpp>
 
 #include <hyprland/src/desktop/Workspace.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/desktop/view/Group.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
@@ -115,20 +117,53 @@ SP<ITarget> CTwoPanePersistent::resolveSlave() {
 // ---- visibility ------------------------------------------------------------
 //
 
-void CTwoPanePersistent::setWindowHidden(SP<ITarget> t, bool hidden) const {
+// Groups own WINDOW_ALPHA_LAYOUT: CGroup::updateWindowVisibility() rewrites it to
+// 1.0/0.0 on every tab switch. If we used that channel too, tabbing inside a group
+// that lives in the hidden stack would pop the window back into view over our panes.
+// Alpha channels multiply, so we take a channel nothing else writes and force 0
+// there instead -- the group can then drive LAYOUT freely without fighting us.
+static constexpr auto TPP_ALPHA = Desktop::View::WINDOW_ALPHA_MOVE_FROM_WORKSPACE;
+
+// A group presents to the layout as a single ITarget whose window() is only the
+// *current* tab, so hiding that alone would leave the other members untouched.
+// Collect every window backing this target instead.
+std::vector<PHLWINDOW> CTwoPanePersistent::windowsFor(SP<ITarget> t) const {
+    std::vector<PHLWINDOW> out;
+
     if (!t)
-        return;
+        return out;
+
+    if (t->type() == TARGET_TYPE_GROUP) {
+        const auto GROUP_TARGET = dynamicPointerCast<CWindowGroupTarget>(t);
+        if (GROUP_TARGET) {
+            const auto GROUP = GROUP_TARGET->getGroup();
+            if (GROUP) {
+                for (const auto& wref : GROUP->windows()) {
+                    const auto W = wref.lock();
+                    if (W)
+                        out.emplace_back(W);
+                }
+                return out;
+            }
+        }
+    }
 
     const auto WINDOW = t->window();
-    if (!WINDOW)
-        return;
+    if (WINDOW)
+        out.emplace_back(WINDOW);
 
+    return out;
+}
+
+void CTwoPanePersistent::setWindowHidden(SP<ITarget> t, bool hidden) const {
     float hiddenAlpha = 0.F;
     if (g_pTPPState && g_pTPPState->config.hiddenAlpha)
         hiddenAlpha = std::clamp(static_cast<float>(g_pTPPState->config.hiddenAlpha->value()), 0.F, 1.F);
 
-    WINDOW->setInputBlocked(Desktop::View::INPUT_BLOCK_MONOCLE_INACTIVE, hidden);
-    *WINDOW->alpha(Desktop::View::WINDOW_ALPHA_LAYOUT) = hidden ? hiddenAlpha : 1.F;
+    for (const auto& WINDOW : windowsFor(t)) {
+        WINDOW->setInputBlocked(Desktop::View::INPUT_BLOCK_MONOCLE_INACTIVE, hidden);
+        *WINDOW->alpha(TPP_ALPHA) = hidden ? hiddenAlpha : 1.F;
+    }
 }
 
 void CTwoPanePersistent::unhideAll() const {

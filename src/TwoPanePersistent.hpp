@@ -54,6 +54,9 @@ namespace Layout::Tiled {
         SP<STPPNode> nodeFor(SP<ITarget> t) const;
         int          indexOf(SP<ITarget> t) const;
 
+        // A group target backs several windows; hiding needs all of them.
+        std::vector<PHLWINDOW> windowsFor(SP<ITarget> t) const;
+
         SP<ITarget>  masterTarget() const;
         // Resolves (and caches) which target belongs in the right pane.
         SP<ITarget>  resolveSlave();
