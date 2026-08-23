@@ -6,8 +6,7 @@
 #include <hyprland/src/layout/target/Target.hpp>
 
 #include <hyprland/src/desktop/Workspace.hpp>
-#include <hyprland/src/desktop/view/window/Window.hpp>
-#include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
+#include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
@@ -128,8 +127,8 @@ void CTwoPanePersistent::setWindowHidden(SP<ITarget> t, bool hidden) const {
     if (g_pTPPState && g_pTPPState->config.hiddenAlpha)
         hiddenAlpha = std::clamp(static_cast<float>(g_pTPPState->config.hiddenAlpha->value()), 0.F, 1.F);
 
-    WINDOW->setInputBlocked(Desktop::View::FOCUS_BLOCK_MONOCLE_INACTIVE, hidden);
-    *WINDOW->presentation().alpha(Desktop::View::WINDOW_ALPHA_LAYOUT) = hidden ? hiddenAlpha : 1.F;
+    WINDOW->setInputBlocked(Desktop::View::INPUT_BLOCK_MONOCLE_INACTIVE, hidden);
+    *WINDOW->alpha(Desktop::View::WINDOW_ALPHA_LAYOUT) = hidden ? hiddenAlpha : 1.F;
 }
 
 void CTwoPanePersistent::unhideAll() const {
@@ -356,7 +355,7 @@ void CTwoPanePersistent::moveTargetInDirection(SP<ITarget> t, Math::eDirection d
 
         if (PMONINDIR && PMONINDIR != PMONITOR) {
             if (t->window())
-                t->window()->presentation().setAnimationsToMove();
+                t->window()->setAnimationsToMove();
 
             t->assignToSpace(PMONINDIR->m_activeWorkspace->m_space, focalPointForDir(t, dir));
         }
