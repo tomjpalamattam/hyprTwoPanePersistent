@@ -17,7 +17,7 @@ Builds against both 0.56.x and current `-git`/`main`. `main` split `CWindow` int
 ## Install
 
 ```sh
-hyprpm add https://github.com/<you>/hyprland-twopanepersistent
+hyprpm add https://github.com/tomjpalamattam/hyprland-twopanepersistent
 hyprpm enable twopanepersistent
 hyprpm reload
 ```
