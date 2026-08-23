@@ -10,7 +10,7 @@ CXXFLAGS += -shared -fPIC -std=c++2b -Wno-c++11-narrowing
 INCLUDES = `pkg-config --cflags pixman-1 libdrm hyprland libinput libudev wayland-server xkbcommon`
 LIBS =
 
-SRC = main.cpp TwoPanePersistent.cpp
+SRC = src/main.cpp src/TwoPanePersistent.cpp
 TARGET = twopanepersistent.so
 
 all: $(TARGET)
