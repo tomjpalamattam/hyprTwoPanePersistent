@@ -1,0 +1,15 @@
+[repository]
+name = "twopanepersistent"
+authors = ["you"]
+# Add a pin for every Hyprland release you support:
+#   ["<hyprland commit hash>", "<this repo's commit hash>"]
+# With no matching pin, hyprpm builds from your latest commit.
+commit_pins = []
+
+[twopanepersistent]
+description = "XMonad's TwoPanePersistent layout: master pane plus a slave pane that remembers its window"
+authors = ["you"]
+output = "twopanepersistent.so"
+build = [
+    "make all"
+]
