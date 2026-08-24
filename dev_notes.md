@@ -164,38 +164,112 @@ That direction needs no special handling.
 
 ---
 
-## 5. Hiding windows: use `setHidden`, not alpha
+## 5. Hiding windows: alpha vs `setHidden`
 
 **Do not use `WINDOW_ALPHA_LAYOUT`.** `CGroup::updateWindowVisibility()` rewrites
 it on every tab switch (active → `1.F`, inactive → `0.F`). A layout that also
 writes it loses the race, and a hidden grouped window pops back into view when
 you press Tab.
 
-Picking a different alpha channel is also a trap: channels that are unused in
-0.56.x are written on `main` (`WINDOW_ALPHA_MOVE_FROM_WORKSPACE` is free in
-0.56.2, but `GlobalWindowController` sets it on `main`).
+There are two viable mechanisms. **We use alpha.** The trade-off is real and was
+settled by wanting animation, not by one being strictly better.
 
-Use `CWindow::setHidden(bool)`:
+### `setHidden(bool)` — the simple one
 
 - Identical signature and semantics on both versions → no `#if` needed.
 - Gates rendering _and_ input (`acceptsInput()` is `!isHidden() && !isInputBlocked()`),
   so no separate `setInputBlocked` call, which avoids the `INPUT_BLOCK_*` /
   `FOCUS_BLOCK_*` naming split entirely.
-- Officially anticipated: `CAlgorithm::updateTiledAlgo` force-calls
-  `setHidden(false)` on layout switch, commented as a safeguard "for layouts
-  (including third-party plugins) that use setHidden".
-- Semantically closer to XMonad, which genuinely unmaps non-visible windows.
+- Calls `setSuspended(true)`: the client stops producing frames. Background
+  windows cost nothing.
+- **Has a safety net.** `CAlgorithm::updateTiledAlgo` force-calls
+  `setHidden(false)` on every layout switch, commented as a safeguard "for
+  layouts (including third-party plugins) that use setHidden".
+- Semantically closest to XMonad, which genuinely unmaps non-visible windows.
+- **No animation.** It is a binary map/unmap, so a revealed window pops in.
 
-FYI on alpha, if ever needed: channels **multiply** (`SMultiplyOperation`,
-identity `1.0`), so any one channel at `0` forces the window invisible.
+### Alpha — what this plugin actually does
+
+Alpha channels are `PHLANIMVAR<float>`, so assigning one plays Hyprland's real
+fade and respects the user's animation config. That is the entire reason to
+prefer it. Everything else about it is worse:
+
+- **No safety net.** `updateTiledAlgo` resets `setHidden` only — nothing in
+  Hyprland ever resets a custom alpha channel. `PLUGIN_EXIT` is not called when
+  a plugin faults, so a crash while windows are hidden strands them invisible
+  until the compositor restarts. Correct un-hiding is load-bearing, not tidy.
+- **Costs resources.** Alpha-0 windows are still mapped and fully composited
+  every frame, and their clients keep drawing. A background video player or game
+  runs at full tilt.
+- **Still mapped**, so screen-share pickers and window lists show invisible
+  windows.
+- **Channel availability is version-specific** — see below.
+
+Channels **multiply** (`SMultiplyOperation`, identity `1.0`), so any single
+channel at `0` forces the window invisible regardless of the others. That is
+what lets us coexist with groups: we hold `WINDOW_ALPHA_MOVE_FROM_WORKSPACE` at
+0 while the group drives `WINDOW_ALPHA_LAYOUT` per tab, and the product is
+correct in every combination. Input likewise stays separate:
+`MONOCLE_INACTIVE` (ours) and `GROUP_INACTIVE` (the group's) are distinct bits.
+
+`WINDOW_ALPHA_MOVE_FROM_WORKSPACE` has **zero writers in 0.56.x**. It is written
+once on `main` — see §10.
+
+### A hybrid, if idle cost ever matters
+
+Alpha for the transition, then `setHidden(true)` once the fade completes,
+reversed on reveal. Gets the animation, the suspend, and the safety net. Needs
+an animation-end callback, so only worth it if the idle CPU cost actually shows
+up — measure with `hyprctl clients` against `top` before building it.
 
 ### Un-hide on every exit path
 
-A hidden window with no layout to un-hide it is stranded forever. Cover:
+A hidden window with no layout to un-hide it is stranded forever, and with alpha
+there is no fallback. Cover:
 
 - `removeTarget()` — window leaving the layout
 - destructor / `unhideAll()` — plugin unload or layout switch
 - `swapTargets()` — target being replaced (§3)
+
+Note `updateTiledAlgo`'s safeguard uses `TARGET->window()`, a single window, so
+it would not have covered group members even if we did use `setHidden`.
+
+---
+
+## 5b. Some dispatchers are closed to plugins
+
+`hl.dsp.window.cycle_next()` cannot drive a plugin layout. `Actions::cycleNext`
+gates on a hardcoded typeid whitelist with no registration hook:
+
+```cpp
+constexpr const std::array<const std::type_info*, 2> LAYOUTS_WITH_CYCLE_NEXT = {
+    &typeid(Layout::Tiled::CMonocleAlgorithm),
+    &typeid(Layout::Tiled::CMasterAlgorithm),
+};
+```
+
+Only those two route to `layoutMessage("cyclenext")`. The fallback path is no
+help either: `windowState()->query().cycle(...)` filters on `acceptsInput()`,
+which every input-blocked (or hidden) stack window fails, so it would only ever
+bounce between master and slave.
+
+Bind `hl.dsp.layout("cyclenext")` instead. This is **not** a workaround — it is
+the exact call `cycle_next` makes internally for monocle. For the nicer call
+shape, wrap it in Lua:
+
+```lua
+local function cycle_next(opts)
+    local fwd = true
+    if type(opts) == "table" and opts.next ~= nil then fwd = opts.next end
+    return hl.dsp.layout(fwd and "cyclenext" or "cycleprev")
+end
+
+hl.bind("SUPER + Tab",         cycle_next())
+hl.bind("SUPER + SHIFT + Tab", cycle_next({ next = false }))
+```
+
+General lesson: before assuming a built-in dispatcher will work, grep it for a
+`typeid` whitelist or an `acceptsInput()` filter.
 
 ---
 
@@ -339,11 +413,15 @@ Roughly the order these bit, and the order worth checking:
    the exact tag and look, don't guess (§2).
 3. **Windows vanish permanently** → a target left `m_nodes` without being
    un-hidden. Check `swapTargets` (§3) and every exit path (§5).
-4. **Hidden window reappears on group tab switch** → alpha channel collision;
-   use `setHidden` (§5).
-5. **Config change does nothing** → `hyprctl keyword` is dead; use
+4. **Hidden window reappears on group tab switch** → alpha channel collision.
+   Groups own `WINDOW_ALPHA_LAYOUT`; use a channel they do not write (§5).
+5. **No animation when revealing a window** → `setHidden` has no transition;
+   alpha does (§5).
+6. **A built-in dispatcher silently does nothing** → check for a typeid
+   whitelist (§5b).
+7. **Config change does nothing** → `hyprctl keyword` is dead; use
    `eval` + `hl.config` (§6).
-6. Develop in a nested session — plugin faults take the compositor with them.
+8. Develop in a nested session — plugin faults take the compositor with them.
    `hyprctl plugin unload <abs>.so ; hyprctl plugin load <abs>.so` is the reload
    cycle; note `PLUGIN_EXIT` is **not** called when the plugin is unloaded due
    to a fault.
@@ -352,10 +430,45 @@ Roughly the order these bit, and the order worth checking:
 
 ## 10. Open / unverified
 
-- The reported glitch was traced to §3 + §4 + §5. Whether "grid view"
-  (as opposed to grouped tabs) is a distinct path — e.g. `hyprexpo` or an
-  overview — has **not** been checked.
+### Known `main`-only issue: `MOVE_FROM_WORKSPACE` is written there
+
+`GlobalWindowController::moveToWorkspace` on `main` does:
+
+```cpp
+if (!WASVISIBLE && pWindow->m_workspace && pWindow->m_workspace->isVisible()) {
+    pWindow->presentation().alpha(View::WINDOW_ALPHA_MOVE_FROM_WORKSPACE)->setValueAndWarp(0.F);
+    *pWindow->presentation().alpha(View::WINDOW_ALPHA_MOVE_FROM_WORKSPACE) = 1.F;
+}
+```
+
+**Scope:** only `moveToWorkspace`, only when a not-currently-visible window
+lands on a visible workspace. It runs _after_ `newTarget`, so it overwrites the
+0 we just set.
+
+**Symptom:** move a window into a `twopanepersistent` workspace where it belongs
+in the hidden stack, and it fades in over the panes instead of staying hidden.
+
+**Severity:** transient and self-correcting — the next `recalculate()` (any
+focus change, cycle, new window, resize) puts it back to 0. Not corruption, not
+permanent.
+
+**Does not affect 0.56.x**, where the channel has zero writers.
+
+**Deliberately not fixed yet.** Fixing it means deferring our alpha write past
+Hyprland's, which needs a tick/idle scheduler — untested code working around
+untested code, for a bug that cannot occur on the version we actually run. Do it
+when someone is actually on `-git` and can reproduce and verify. At that point
+re-check which channels are free rather than assuming this one still is; `main`
+will have moved.
+
+### Still open
+
+- "Grid view" was never pinned down. The reported glitch was traced to §3 + §4
+  and the group handling, but whether "grid view" means grouped tabs or
+  something else (`hyprexpo`, an overview) has **not** been confirmed.
 - `commit_pins` is still empty.
-- Not yet verified on `main`; the `__has_include` path is reasoned from header
-  diffs, not from an actual build.
+- The `main` compatibility path is reasoned from header diffs, not from a build.
+  It is a compatibility _attempt_, not a supported configuration.
 - Multi-monitor `moveTargetInDirection` fallback is implemented but untested.
+- Idle CPU cost of alpha-hiding (vs `setHidden`'s suspend) has not been
+  measured. If it is noticeable, see the hybrid note in §5.
