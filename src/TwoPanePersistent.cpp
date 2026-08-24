@@ -26,6 +26,10 @@
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 #include <hyprland/src/managers/fullscreen/handler/FullscreenHandler.hpp>
 
+#include <hyprland/src/layout/LayoutManager.hpp>
+#include <hyprland/src/layout/supplementary/DragController.hpp>
+#include <hyprland/src/managers/input/InputManager.hpp>
+
 #include <hyprland/src/output/Monitor.hpp>
 #include <hyprland/src/state/MonitorState.hpp>
 #include <hyprland/src/event/EventBus.hpp>
@@ -237,8 +241,36 @@ void CTwoPanePersistent::newTarget(SP<ITarget> target) {
     recalculate();
 }
 
+// A tiled drag-drop does NOT arrive as a swap. Hyprland removes the dragged
+// target and re-adds it through here, and expects the layout to work out where
+// it landed -- CMasterAlgorithm does the same thing via dragController() plus
+// the mouse coords. Forwarding blindly to newTarget() makes drops inert,
+// because newTarget() early-returns for a target already in m_nodes.
 void CTwoPanePersistent::movedTarget(SP<ITarget> target, std::optional<Vector2D> focalPoint) {
-    newTarget(target);
+    if (!nodeFor(target)) {
+        newTarget(target);
+        return;
+    }
+
+    const bool DRAGGED = g_layoutManager && g_layoutManager->dragController() && g_layoutManager->dragController()->wasDraggingWindow();
+
+    if (DRAGGED && m_nodes.size() > 1 && m_parent && m_parent->space()) {
+        const auto AREA    = m_parent->space()->workArea();
+        const auto COORDS  = focalPoint.value_or(g_pInputManager ? g_pInputManager->getMouseCoordsInternal() : AREA.middle());
+        const bool ON_LEFT = COORDS.x < AREA.x + AREA.w * m_split;
+
+        if (ON_LEFT)
+            // Dropped on the master side: promote it. Already-master is a no-op,
+            // promoteToMaster() early-returns for index <= 0.
+            promoteToMaster(target);
+        else if (target == masterTarget())
+            // Master dragged onto the slave side: the old slave takes over.
+            promoteToMaster(resolveSlave());
+        else
+            m_slave = target;
+    }
+
+    recalculate();
 }
 
 void CTwoPanePersistent::removeTarget(SP<ITarget> target) {
