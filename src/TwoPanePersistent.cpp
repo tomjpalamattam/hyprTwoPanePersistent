@@ -216,6 +216,32 @@ void CTwoPanePersistent::newTarget(SP<ITarget> target) {
         m_splitSeeded = true;
     }
 
+    // A tiled window dropped by mouse arrives here as a fresh target, because
+    // dragBegin() floated it and that ran removeTarget(). wasDraggingWindow() is
+    // still true at this point (dragEnd clears it only after re-tiling), so this
+    // is where the drop position has to be honoured -- CMasterAlgorithm does the
+    // same thing in addTarget().
+    if (!m_nodes.empty() && m_parent && m_parent->space() && g_layoutManager && g_layoutManager->dragController()->wasDraggingWindow()) {
+        const auto AREA   = m_parent->space()->workArea();
+        const auto COORDS = g_pInputManager ? g_pInputManager->getMouseCoordsInternal() : AREA.middle();
+
+        // Dropped on the master side: take the master pane, old master drops
+        // into the slave pane so the visible pair stays the visible pair.
+        if (COORDS.x < AREA.x + AREA.w * m_split) {
+            const auto OLD_MASTER = masterTarget();
+            m_nodes.insert(m_nodes.begin(), makeShared<STPPNode>(target));
+            m_slave = OLD_MASTER;
+            recalculate();
+            return;
+        }
+
+        // Dropped on the slave side: normal insert below master, becomes slave.
+        m_nodes.insert(m_nodes.begin() + 1, makeShared<STPPNode>(target));
+        m_slave = target;
+        recalculate();
+        return;
+    }
+
     // New windows go directly below the master, matching XMonad's insertion into
     // the stack just after the focused window when master has focus.
     const auto FOCUSED = focusedTarget();
@@ -241,36 +267,11 @@ void CTwoPanePersistent::newTarget(SP<ITarget> target) {
     recalculate();
 }
 
-// A tiled drag-drop does NOT arrive as a swap. Hyprland removes the dragged
-// target and re-adds it through here, and expects the layout to work out where
-// it landed -- CMasterAlgorithm does the same thing via dragController() plus
-// the mouse coords. Forwarding blindly to newTarget() makes drops inert,
-// because newTarget() early-returns for a target already in m_nodes.
+// A tiled drag-drop lands in newTarget(), not here: dragBegin floats the window,
+// which runs CAlgorithm::setFloating -> removeTarget(), so by drop time the
+// target has already left m_nodes. See the drag handling in newTarget().
 void CTwoPanePersistent::movedTarget(SP<ITarget> target, std::optional<Vector2D> focalPoint) {
-    if (!nodeFor(target)) {
-        newTarget(target);
-        return;
-    }
-
-    const bool DRAGGED = g_layoutManager && g_layoutManager->dragController() && g_layoutManager->dragController()->wasDraggingWindow();
-
-    if (DRAGGED && m_nodes.size() > 1 && m_parent && m_parent->space()) {
-        const auto AREA    = m_parent->space()->workArea();
-        const auto COORDS  = focalPoint.value_or(g_pInputManager ? g_pInputManager->getMouseCoordsInternal() : AREA.middle());
-        const bool ON_LEFT = COORDS.x < AREA.x + AREA.w * m_split;
-
-        if (ON_LEFT)
-            // Dropped on the master side: promote it. Already-master is a no-op,
-            // promoteToMaster() early-returns for index <= 0.
-            promoteToMaster(target);
-        else if (target == masterTarget())
-            // Master dragged onto the slave side: the old slave takes over.
-            promoteToMaster(resolveSlave());
-        else
-            m_slave = target;
-    }
-
-    recalculate();
+    newTarget(target);
 }
 
 void CTwoPanePersistent::removeTarget(SP<ITarget> target) {
