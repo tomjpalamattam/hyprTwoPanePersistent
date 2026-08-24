@@ -129,17 +129,20 @@ SP<ITarget> CTwoPanePersistent::resolveSlave() {
 // ---- visibility ------------------------------------------------------------
 //
 
-// Hiding uses CWindow::setHidden rather than an alpha channel.
+// Hiding uses an animated alpha channel plus an input block, the same shape
+// CMonocleAlgorithm uses.
 //
-// Alpha was a dead end: groups own WINDOW_ALPHA_LAYOUT and rewrite it on every
-// tab switch, and the channels that are free on 0.56.x are not free on main.
-// setHidden is the mechanism Hyprland actually sanctions for layouts -- see the
-// safeguard in CAlgorithm::updateTiledAlgo, which force-unhides "for layouts
-// (including third-party plugins) that use setHidden". It gates both rendering
-// and input, and leaves the group free to drive alpha however it likes.
+// setHidden() also works and is simpler, but it unmaps and suspends the window,
+// so a revealed window pops in with no transition. Alpha channels are
+// PHLANIMVAR<float> -- assigning them plays Hyprland's real fade and respects
+// the user's animation config.
 //
-// It is also closer to the Haskell: XMonad's TwoPane genuinely unmaps the
-// windows that are not in a pane rather than making them transparent.
+// The channel choice matters. Groups own WINDOW_ALPHA_LAYOUT and rewrite it on
+// every tab switch (CGroup::updateWindowVisibility: active 1.F, inactive 0.F),
+// so a layout writing that channel loses the race and hidden grouped windows
+// pop back into view on Tab. WINDOW_ALPHA_MOVE_FROM_WORKSPACE has no writers in
+// 0.56.x. Channels multiply (SMultiplyOperation, identity 1.0), so holding 0
+// here forces the window invisible regardless of what the group does to LAYOUT.
 
 // A group presents to the layout as a single ITarget whose window() is only the
 // *current* tab, so hiding that alone would leave the other members visible.
@@ -174,8 +177,19 @@ std::vector<PHLWINDOW> CTwoPanePersistent::windowsFor(SP<ITarget> t) const {
 
 void CTwoPanePersistent::setWindowHidden(SP<ITarget> t, bool hidden) const {
     for (const auto& WINDOW : windowsFor(t)) {
-        if (WINDOW->isHidden() != hidden)
-            WINDOW->setHidden(hidden);
+        // Clear any leftover setHidden state from an earlier build of this
+        // plugin. Without this, a window left unmapped stays unmapped forever
+        // and the alpha below can never make it visible again.
+        if (WINDOW->isHidden())
+            WINDOW->setHidden(false);
+
+#if TPP_HYPRLAND_SPLIT_WINDOW
+        WINDOW->setInputBlocked(Desktop::View::FOCUS_BLOCK_MONOCLE_INACTIVE, hidden);
+        *WINDOW->presentation().alpha(Desktop::View::WINDOW_ALPHA_MOVE_FROM_WORKSPACE) = hidden ? 0.F : 1.F;
+#else
+        WINDOW->setInputBlocked(Desktop::View::INPUT_BLOCK_MONOCLE_INACTIVE, hidden);
+        *WINDOW->alpha(Desktop::View::WINDOW_ALPHA_MOVE_FROM_WORKSPACE) = hidden ? 0.F : 1.F;
+#endif
     }
 }
 
@@ -483,6 +497,12 @@ void CTwoPanePersistent::onFocusChanged(SP<ITarget> t) {
 
 // XMonad's Tab is focusDown over the whole stack, master included. Focusing a
 // stack window promotes it into the slave pane via onFocusChanged.
+//
+// NOTE: hl.dsp.window.cycle_next() cannot drive this. Actions::cycleNext gates
+// on a hardcoded typeid whitelist (CMonocleAlgorithm, CMasterAlgorithm) with no
+// registration hook, and its fallback query filters on acceptsInput(), which
+// input-blocked stack windows fail. Bind hl.dsp.layout("cyclenext") instead --
+// that is the same call cycle_next makes internally for monocle.
 void CTwoPanePersistent::cycleFocus(int delta) {
     pruneDead();
 
