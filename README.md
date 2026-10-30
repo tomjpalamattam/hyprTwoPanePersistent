@@ -10,9 +10,10 @@ next in the stack, which is the entire reason the XMonad module exists.
 Requires Hyprland 0.55 or newer (it registers a tiled algorithm through
 `HyprlandAPI::addTiledAlgo`, which replaced `IHyprLayout`).
 
-Builds against both 0.56.x and current `-git`/`main`. `main` split `CWindow` into
-`view/window/` with a `presentation()` sub-object; the source detects this with
-`__has_include` and adapts, so one branch covers both.
+Builds against 0.56.x and 0.57.x. 0.57 moved `CWorkspace` to
+`workspace/HLWorkspace.hpp` as `Workspace::CHLWorkspace`, and split `CWindow`
+into `view/window/` with a `presentation()` sub-object; the source detects both
+with `__has_include` and adapts, so one branch covers every supported version.
 
 ## Install
 

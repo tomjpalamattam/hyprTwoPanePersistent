@@ -4,7 +4,7 @@ Everything learned while porting XMonad's `TwoPanePersistent` to a Hyprland
 plugin. Written down because most of it is not in the wiki, and all of it cost
 a debugging cycle to find.
 
-Target: Hyprland **0.56.2** (`efb5099`), also builds against `main`.
+Target: Hyprland **0.57.0** (`0aa6745`), also builds against 0.56.2.
 
 ---
 
@@ -56,35 +56,51 @@ Read these before writing anything — they are the real documentation:
 Hyprland guarantees **no** plugin API stability. The wiki says internal methods
 may change "without any prior notice", and it means it.
 
-Between 0.56.2 and `main`, `CWindow` was decomposed:
+Between 0.56.2 and 0.57.0, `CWindow` was decomposed:
 
-|                  | 0.56.2                    | `main`                                              |
+|                  | 0.56.2                    | 0.57.0                                              |
 | ---------------- | ------------------------- | --------------------------------------------------- |
 | Header           | `desktop/view/Window.hpp` | `desktop/view/window/Window.hpp`                    |
 | Alpha / anim     | directly on `CWindow`     | behind `.presentation()` (`WindowPresentation.hpp`) |
 | Input-block enum | `INPUT_BLOCK_*`           | `FOCUS_BLOCK_*` (moved to `view/focusable/`)        |
 
-`main` also adds ~15 new files under `desktop/view/window/` (`WindowBackend`,
+The workspace class moved at the same time:
+
+|                  | 0.56.2                  | 0.57.0                                |
+| ---------------- | ----------------------- | ------------------------------------- |
+| Header           | `desktop/Workspace.hpp` | `workspace/HLWorkspace.hpp`           |
+| Class            | `CWorkspace`            | `Workspace::CHLWorkspace`             |
+| Visibility       | `isVisible()`           | `visible()`                           |
+| `CSpace` access  | public `m_space`        | `space()` accessor (`m_space` private) |
+
+0.57.0 also adds ~15 new files under `desktop/view/window/` (`WindowBackend`,
 `WindowMetadata`, `WindowEffectsController`, …) and a `view/focusable/` mixin.
 
 **What did NOT change** (verified by diffing the trees): `ITiledAlgorithm`,
 `IModeAlgorithm`, `CAlgorithm`, `CSpace`, `ITarget`, `FocusState`, `EventBus`,
 `MonitorState`, `ConfigValue`, `FloatValue`. The layout interfaces are stable;
-the window/view layer is what moves.
+the window/view and workspace layers are what move.
 
 ### How this repo stays portable
 
-One `__has_include` probe, set once at the top of `TwoPanePersistent.cpp`:
+Two `__has_include` probes, set once at the top of `TwoPanePersistent.cpp`:
 
 ```cpp
 #if __has_include(<hyprland/src/desktop/view/window/Window.hpp>)
 #define TPP_HYPRLAND_SPLIT_WINDOW 1
 ...
+#endif
+
+#if __has_include(<hyprland/src/workspace/HLWorkspace.hpp>)
+#define TPP_HYPRLAND_WORKSPACE_SPLIT 1
+...
+#endif
 ```
 
-Only **two** version-conditional spots remain: the include block and
-`setAnimationsToMove()`. Keep it that way — prefer APIs that are identical on
-both (see §5) over adding more `#if`.
+The version-conditional spots are the two include blocks,
+`setAnimationsToMove()`, the workspace visibility call and the `CSpace` accessor.
+Keep it that way — prefer APIs that are identical on both (see §5) over adding
+more `#if`.
 
 ### Debugging drift
 
@@ -213,7 +229,7 @@ correct in every combination. Input likewise stays separate:
 `MONOCLE_INACTIVE` (ours) and `GROUP_INACTIVE` (the group's) are distinct bits.
 
 `WINDOW_ALPHA_MOVE_FROM_WORKSPACE` has **zero writers in 0.56.x**. It is written
-once on `main` — see §10.
+once in 0.57+ — see §10.
 
 ### A hybrid, if idle cost ever matters
 
@@ -430,12 +446,12 @@ Roughly the order these bit, and the order worth checking:
 
 ## 10. Open / unverified
 
-### Known `main`-only issue: `MOVE_FROM_WORKSPACE` is written there
+### Known 0.57+ issue: `MOVE_FROM_WORKSPACE` is written there
 
-`GlobalWindowController::moveToWorkspace` on `main` does:
+`GlobalWindowController::moveToWorkspace` in 0.57+ does:
 
 ```cpp
-if (!WASVISIBLE && pWindow->m_workspace && pWindow->m_workspace->isVisible()) {
+if (!WASVISIBLE && pWindow->m_workspace && pWindow->m_workspace->visible()) {
     pWindow->presentation().alpha(View::WINDOW_ALPHA_MOVE_FROM_WORKSPACE)->setValueAndWarp(0.F);
     *pWindow->presentation().alpha(View::WINDOW_ALPHA_MOVE_FROM_WORKSPACE) = 1.F;
 }
@@ -455,11 +471,9 @@ permanent.
 **Does not affect 0.56.x**, where the channel has zero writers.
 
 **Deliberately not fixed yet.** Fixing it means deferring our alpha write past
-Hyprland's, which needs a tick/idle scheduler — untested code working around
-untested code, for a bug that cannot occur on the version we actually run. Do it
-when someone is actually on `-git` and can reproduce and verify. At that point
-re-check which channels are free rather than assuming this one still is; `main`
-will have moved.
+Hyprland's, which needs a tick/idle scheduler — untested code working around a
+transient visual glitch. Reproduce it first, then re-check which channels are
+free rather than assuming this one still is; Hyprland will have moved.
 
 ### Still open
 
@@ -467,8 +481,8 @@ will have moved.
   and the group handling, but whether "grid view" means grouped tabs or
   something else (`hyprexpo`, an overview) has **not** been confirmed.
 - `commit_pins` is still empty.
-- The `main` compatibility path is reasoned from header diffs, not from a build.
-  It is a compatibility _attempt_, not a supported configuration.
+- The 0.56.x compatibility path is compile-checked against v0.56.2 headers, not
+  runtime-tested. Treat it as supported-for-build, not verified at runtime.
 - Multi-monitor `moveTargetInDirection` fallback is implemented but untested.
 - Idle CPU cost of alpha-hiding (vs `setHidden`'s suspend) has not been
   measured. If it is noticeable, see the hybrid note in §5.

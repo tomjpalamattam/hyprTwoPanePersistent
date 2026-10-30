@@ -6,7 +6,14 @@
 #include <hyprland/src/layout/target/Target.hpp>
 #include <hyprland/src/layout/target/WindowGroupTarget.hpp>
 
+// 0.57.0 moved CWorkspace under workspace/ and renamed it to CHLWorkspace.
+#if __has_include(<hyprland/src/workspace/HLWorkspace.hpp>)
+#define TPP_HYPRLAND_WORKSPACE_SPLIT 1
+#include <hyprland/src/workspace/HLWorkspace.hpp>
+#else
+#define TPP_HYPRLAND_WORKSPACE_SPLIT 0
 #include <hyprland/src/desktop/Workspace.hpp>
+#endif
 
 // Hyprland main split CWindow apart: Window.hpp moved under view/window/ and the
 // presentation-ish methods moved behind a WindowPresentation sub-object. 0.56.x
@@ -54,8 +61,13 @@ CTwoPanePersistent::CTwoPanePersistent() {
     // Focusing a stack window makes it the slave. Focusing the master changes
     // nothing -- that is the "persistent" half of the name.
     m_focusCallback = Event::bus()->m_events.window.active.listen([this](PHLWINDOW pWindow, Desktop::eFocusReason reason) {
+#if TPP_HYPRLAND_WORKSPACE_SPLIT
+        if (!pWindow || !pWindow->m_workspace || !pWindow->m_workspace->visible())
+            return;
+#else
         if (!pWindow || !pWindow->m_workspace || !pWindow->m_workspace->isVisible())
             return;
+#endif
 
         const auto TARGET = pWindow->layoutTarget();
         if (!TARGET)
@@ -472,7 +484,11 @@ void CTwoPanePersistent::moveTargetInDirection(SP<ITarget> t, Math::eDirection d
 #endif
             }
 
+#if TPP_HYPRLAND_WORKSPACE_SPLIT
+            t->assignToSpace(PMONINDIR->m_activeWorkspace->space(), focalPointForDir(t, dir));
+#else
             t->assignToSpace(PMONINDIR->m_activeWorkspace->m_space, focalPointForDir(t, dir));
+#endif
         }
 
         return;
